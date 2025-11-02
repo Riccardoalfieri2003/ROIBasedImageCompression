@@ -164,6 +164,9 @@ from image_cleaning import comprehensive_region_cleaning, remove_small_component
 
 
 def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compactness=1, sigma=1, base_segments=3):
+
+
+    debug=False 
     """
     Recursively apply SLIC segmentation, adapting n_segments based on should_split_improved.
     FIXED: Handles first iteration properly where mask covers entire region.
@@ -191,22 +194,32 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
     # SPECIAL HANDLING FOR FIRST ITERATION: Check if mask covers entire bbox
     if depth == 0 or np.all(bbox_mask):
         # For full masks, use the regular analysis on the entire region
-        should_split_result = should_split(bbox_region)
+        #should_split_result = should_split(bbox_region)
+
+        # Option 1: Test with the entire image as a "rectangle" region
+        bbox_region = image_rgb  # The entire image
+        clean_mask = np.ones(image_rgb.shape[:2], dtype=bool)  # Full mask
+
+        should_split_result, n_segments = should_split_irregular_region(bbox_region, clean_mask, debug=False)
         print(f"Depth {depth}: Analyzing full rectangular region")
 
 
 
     else:
 
+        min_size=image_rgb.size/1000
+
+        cleaned_region, cleaned_mask = comprehensive_region_cleaning(
+            bbox_region, bbox_mask, 
+            min_area_ratio=0.02,  # More aggressive cleaning
+            border_cleaning=True,  # Enable border cleaning
+            show_cleaning=(depth <= 2)  # Show cleaning process only for first few levels
+        )
+
         """AGGIUNGERE: Se l'immagibne è piccola, mantinei"""
 
-        if np.sum(bbox_mask) > 100:  # Only clean if region is substantial
-            cleaned_region, cleaned_mask = comprehensive_region_cleaning(
-                bbox_region, bbox_mask, 
-                min_area_ratio=0.02,  # More aggressive cleaning
-                border_cleaning=True,  # Enable border cleaning
-                show_cleaning=(depth <= 2)  # Show cleaning process only for first few levels
-            )
+        if np.sum(cleaned_mask) > min_size:  # Only clean if region is substantial
+            
             
             # Use cleaned region for display AND analysis
             clean_display = create_clean_region_display(cleaned_region, cleaned_mask)
@@ -215,7 +228,7 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
             bbox_region = cleaned_region
             bbox_mask = cleaned_mask
 
-            should_split_result = should_split_irregular_region(bbox_region, bbox_mask)
+            should_split_result, n_segments = should_split_irregular_region(bbox_region, bbox_mask)
             
         else:
 
@@ -238,6 +251,7 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
             """
 
             should_split_result=False
+            n_segments=1
 
 
 
@@ -251,12 +265,12 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
     # --- VISUALIZATION ---
     if True:
         # Create the visualization
-        plt.figure(figsize=(15, 5))
+        #plt.figure(figsize=(15, 5))
 
 
 
 
-        
+        """
         # Plot 1: Show the region context
         plt.subplot(1, 3, 1)
         if depth == 0 or np.all(bbox_mask):
@@ -276,6 +290,7 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
             plt.imshow(display_image)
             plt.title(f'Irregular Region at Depth {depth}')
         plt.axis('off')
+        """
 
 
 
@@ -296,14 +311,25 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
         plt.axis('off')
         """
 
+        min_size=image_rgb.size/1000
+
         # In your recursive function, update the visualization part:
         if depth == 0 or np.all(bbox_mask):
+            pass
             # Analyzing the full rectangle
-            plt.imshow(bbox_region)
-            plt.title('Analyzing: Full Region')
+            if debug:
+                plt.imshow(bbox_region)
+                plt.title('Analyzing: Full Region')
         else:
+
+            cleaned_region, cleaned_mask = comprehensive_region_cleaning(
+                bbox_region, bbox_mask, 
+                min_area_ratio=0.03,  # Keep components with at least 3% of total area
+                show_cleaning=(depth <= 2)  # Show cleaning process only for first few levels
+            )
+            
             # Clean the mask before analysis and display
-            if np.sum(bbox_mask) > 100:  # Only clean if region is substantial
+            if np.sum(cleaned_mask) > min_size:  # Only clean if region is substantial
                 
                 """cleaned_region, cleaned_mask = comprehensive_region_cleaning(
                     bbox_region, bbox_mask, 
@@ -313,8 +339,9 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
                 
                 # Use cleaned region for display AND analysis
                 #clean_display = create_clean_region_display(cleaned_region, cleaned_mask)
-                plt.imshow(clean_display)
-                plt.title(f'Cleaned Irregular Region\n({np.sum(cleaned_mask)} pixels)')
+                if debug:
+                    plt.imshow(clean_display)
+                    plt.title(f'Cleaned Irregular Region\n({np.sum(cleaned_mask)} pixels)')
                 
                 # Update the variables for analysis
                 bbox_region = cleaned_region
@@ -322,29 +349,36 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
             else:
                 # For very small regions, just use basic cleaning
                 clean_display = create_clean_region_display(bbox_region, bbox_mask)
-                plt.imshow(clean_display)
-                plt.title(f'Irregular Region\n({np.sum(bbox_mask)} pixels)')
+                if debug:
+                    plt.imshow(clean_display)
+                    plt.title(f'Irregular Region\n({np.sum(bbox_mask)} pixels)')
+                
         
 
 
 
 
         # Plot 3: Decision information
-        plt.subplot(1, 3, 3)
+        """plt.subplot(1, 3, 3)
         plt.xlim(0, 1)
         plt.ylim(0, 1)
-        plt.axis('off')
+        plt.axis('off')"""
         
         decision_color = 'red' if should_split_result else 'green'
         decision_text = "SPLIT" if should_split_result else "KEEP"
         
-        plt.text(0.5, 0.9, f"DECISION: {decision_text}", fontsize=16, 
+        """plt.text(0.5, 0.9, f"DECISION: {decision_text}", fontsize=16, 
                 color=decision_color, ha='center', va='center', 
                 bbox=dict(boxstyle="round,pad=0.3", facecolor=decision_color, alpha=0.3))
         
         plt.title('Analysis Results')
         plt.tight_layout()
-        plt.show()
+        plt.show()"""
+
+        if debug:
+            plt.title('Analysis Results')
+            plt.tight_layout()
+            plt.show()
     
     if not should_split_result:
         # Region is uniform enough - stop recursion here
@@ -359,7 +393,7 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
     all_segments = []
     
     # Apply SLIC only within the irregular mask
-    n_segments = 3
+    #n_segments = 3
     sub_segments = slic(
         image,
         n_segments=n_segments,
@@ -437,50 +471,39 @@ def get_adaptive_parameters(region_image):
 def visualize_segments_on_image(base_image, all_segments):
     """
     Draw red contours for every segment found at all recursion levels.
-    FIXED: Handles dimension mismatches between masks and target regions.
+    Ensures proper alignment between local masks and the global image.
     """
     contour_image = base_image.copy()
-    base_height, base_width = base_image.shape[:2]
+    base_h, base_w = base_image.shape[:2]
+
+    count_drawn = 0
 
     for i, seg in enumerate(all_segments):
-        try:
-            mask = seg["mask"]
-            x_min, y_min, x_max, y_max = seg["bbox"]
-            
-            # Calculate expected region dimensions
-            region_height = y_max - y_min
-            region_width = x_max - x_min
-            
-            # Get actual mask dimensions
-            mask_height, mask_width = mask.shape[:2]
-            
-            # Handle dimension mismatches by taking the minimum
-            copy_height = min(region_height, mask_height, base_height - y_min)
-            copy_width = min(region_width, mask_width, base_width - x_min)
-            
-            # Skip if dimensions are invalid
-            if copy_height <= 0 or copy_width <= 0:
-                print(f"Warning: Skipping segment {i} with invalid dimensions")
-                continue
-            
-            # Create full mask and copy only the valid portion
-            full_mask = np.zeros(base_image.shape[:2], dtype=np.uint8)
-            
-            # Copy the compatible portion of the mask
-            full_mask[y_min:y_min+copy_height, x_min:x_min+copy_width] = \
-                mask[:copy_height, :copy_width].astype(np.uint8) * 255
+        mask = seg["mask"]
+        x_min, y_min, x_max, y_max = seg["bbox"]
 
-            # Find and draw contours
-            contours, _ = cv2.findContours(full_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(contour_image, contours, -1, (255, 0, 0), 1)
-            
-        except Exception as e:
-            print(f"Error processing segment {i}: {e}")
-            print(f"BBox: ({x_min}, {y_min}, {x_max}, {y_max})")
-            print(f"Mask shape: {mask.shape}")
-            print(f"Base image shape: {base_image.shape}")
+        if not np.any(mask):
             continue
 
+        # Convert bbox to integer and ensure valid range
+        x_min, y_min = max(0, int(x_min)), max(0, int(y_min))
+        x_max, y_max = min(base_w, int(x_max)), min(base_h, int(y_max))
+
+        # Resize mask to fit the bounding box exactly
+        target_w, target_h = x_max - x_min, y_max - y_min
+        resized_mask = cv2.resize(mask.astype(np.uint8), (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+
+        # Create full-size mask for contour drawing
+        full_mask = np.zeros((base_h, base_w), dtype=np.uint8)
+        full_mask[y_min:y_max, x_min:x_max] = resized_mask * 255
+
+        # Find contours
+        contours, _ = cv2.findContours(full_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            cv2.drawContours(contour_image, contours, -1, (255, 0, 0), 1)
+            count_drawn += 1
+
+    print(f"Contours actually drawn: {count_drawn}/{len(all_segments)}")
     return contour_image
 
 
@@ -723,7 +746,7 @@ def should_split_irregular_region(bbox_region, region_mask):
 
 # --- Example usage ---
 if __name__ == "__main__":
-    image = cv2.imread("images/Lenna.webp")
+    image = cv2.imread("images/nero.png")
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
@@ -739,13 +762,48 @@ if __name__ == "__main__":
 
     all_segments = recursive_slic_adaptive(
         image_rgb,
-        depth_limit=6,  # optional
+        depth_limit=3,  # optional
         base_segments=3,
         compactness=1,
         sigma=1
     )
 
+    print("\n\n\n\n")
+
     print(f"Numero di regioni: {len(all_segments)}")
+
+    # Count how many non-empty masks produce contours
+    count_drawn = 0
+    for i, seg in enumerate(all_segments):
+        mask = seg["mask"]
+        if not np.any(mask):
+            continue
+
+        x_min, y_min, x_max, y_max = seg["bbox"]
+        full_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
+
+        # --- Fix dimension mismatch ---
+        mask_h, mask_w = mask.shape[:2]
+        region_h = y_max - y_min
+        region_w = x_max - x_min
+
+        # Take the minimum overlap between mask and target region
+        copy_h = min(mask_h, region_h)
+        copy_w = min(mask_w, region_w)
+
+        # Skip if the region is invalid
+        if copy_h <= 0 or copy_w <= 0:
+            print(f"Skipping region {i}: invalid dimensions {mask.shape} vs {region_h, region_w}")
+            continue
+
+        # Copy only the overlapping portion
+        full_mask[y_min:y_min+copy_h, x_min:x_min+copy_w] = mask[:copy_h, :copy_w].astype(np.uint8) * 255
+
+        contours, _ = cv2.findContours(full_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if len(contours) > 0:
+            count_drawn += 1
+
+
 
     result = visualize_segments_on_image(image_rgb, all_segments)
 
@@ -755,3 +813,65 @@ if __name__ == "__main__":
     plt.axis("off")
     plt.show()
 
+
+    for i, seg in enumerate(all_segments):
+        mask = seg["mask"]
+        if not np.any(mask):
+            print(f"⚠️  Region {i} is empty (mask all zeros)")
+            continue
+        print(f"✅ Region {i}: mask has {mask.sum()} active pixels")
+
+
+
+    for i, seg in enumerate(all_segments):
+        mask = seg["mask"]
+        if not np.any(mask):
+            continue
+
+        x_min, y_min, x_max, y_max = seg["bbox"]
+        print(f"Region {i}: bbox=({x_min}, {y_min}, {x_max}, {y_max}), "
+            f"mask shape={mask.shape}, "
+            f"region size={(y_max - y_min, x_max - x_min)}, "
+            f"sum={mask.sum()}")
+
+
+    # --- Visualize each region one at a time ---
+    import matplotlib.pyplot as plt
+
+    for i, seg in enumerate(all_segments):
+        mask = seg["mask"]
+        if not np.any(mask):
+            continue
+
+        x_min, y_min, x_max, y_max = seg["bbox"]
+
+        # Crop the region from the original image
+        cropped_image = image_rgb[y_min:y_max, x_min:x_max]
+        cropped_mask = mask[: (y_max - y_min), : (x_max - x_min)]
+
+        # Ensure shapes match
+        h, w = cropped_image.shape[:2]
+        cropped_mask = cv2.resize(cropped_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
+
+        # Apply the mask with white background
+        background = np.ones_like(cropped_image, dtype=np.uint8) * 255
+        region_only = np.where(cropped_mask[..., None].astype(bool), cropped_image, background)
+
+        # Plot one region at a time
+        plt.figure(figsize=(6, 6))
+        plt.imshow(region_only)
+        plt.title(f"Region {i+1}/{len(all_segments)}  |  BBox: ({x_min}, {y_min})–({x_max}, {y_max})")
+        plt.axis("off")
+        plt.show()
+
+    
+
+
+
+"""
+DA aggiungere: 
+- se la regione geenrata è piccola, non considerarla come generata, includerla come regione nella madre
+- se la regione è piccola, non applicare tutti e 4 i criteri di suddivsione check
+- dividere il split score per il trheshold
+- aggiustare la bbox e mask. Quando c'è l'eliminaione dei pixel li'mmagine diventa più piccola. non va bene, i pixel dovrebbero rimanere nell'immagien completa
+"""

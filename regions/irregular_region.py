@@ -1,3 +1,4 @@
+import math
 import cv2
 from matplotlib import pyplot as plt
 import numpy as np
@@ -46,7 +47,7 @@ def create_compact_region(bbox_region, clean_mask):
     
     return compact_region
 
-def should_split_irregular_region(bbox_region, clean_mask):
+def should_split_irregular_region(bbox_region, clean_mask, debug=False):
     """
     Analyze an irregular region without black background contamination.
     
@@ -57,6 +58,24 @@ def should_split_irregular_region(bbox_region, clean_mask):
     Returns:
         Same as should_split but for irregular regions
     """
+
+
+    BLUR_KERNEL_SIZE = (5, 5) 
+    
+    # Create a copy to avoid modifying the original image outside this function
+    blurred_bbox_region = bbox_region.copy() 
+    
+    # Apply Gaussian Blur
+    blurred_bbox_region = cv2.GaussianBlur(blurred_bbox_region, BLUR_KERNEL_SIZE, 0)
+    # Note: The blur is applied to all three color channels simultaneously.
+    # ------------------------------------
+
+    # Extract only the pixels in the actual region (using original clean_mask)
+    region_pixels = blurred_bbox_region[clean_mask]
+
+
+
+
     # Extract only the pixels in the actual region
     region_pixels = bbox_region[clean_mask]
     
@@ -67,10 +86,15 @@ def should_split_irregular_region(bbox_region, clean_mask):
     compact_region = create_compact_region(bbox_region, clean_mask)
     
     # Use your existing analysis functions on the compact region
-    color_score, entropy_norm, peaks_norm = color_variation_score_irregular(bbox_region, clean_mask, show_hist=False)
-    normalized_texture, fine_texture, pattern_regularity = enhanced_texture_analysis_irregular(bbox_region, clean_mask, show_analysis=False)
-    smoothness_score = gradient_smoothness_score_irregular(bbox_region, clean_mask, show_grad=False)
-    edge_score, density, strength = edge_density_score_irregular(bbox_region, clean_mask, show_edges=False)
+    """color_score, entropy_norm, peaks_norm = color_variation_score_irregular(bbox_region, clean_mask, show_hist=debug)
+    normalized_texture, fine_texture, pattern_regularity = enhanced_texture_analysis_irregular(bbox_region, clean_mask, show_analysis=debug)
+    smoothness_score = gradient_smoothness_score_irregular(bbox_region, clean_mask, show_grad=debug)
+    edge_score, density, strength = edge_density_score_irregular(bbox_region, clean_mask, show_edges=debug)"""
+
+    color_score, entropy_norm, peaks_norm = color_variation_score_irregular(bbox_region, clean_mask, show_hist=debug)
+    normalized_texture, fine_texture, pattern_regularity = enhanced_texture_analysis_irregular(blurred_bbox_region, clean_mask, show_analysis=debug)
+    smoothness_score = gradient_smoothness_score_irregular(blurred_bbox_region, clean_mask, show_grad=debug)
+    edge_score, density, strength = edge_density_score_irregular(blurred_bbox_region, clean_mask, show_edges=debug)
     
     print(f"\n=== REGION ANALYSIS ===")
     print(f"Color score: {color_score:.3f} (entropy: {entropy_norm:.3f}, peaks: {peaks_norm:.3f})")
@@ -217,7 +241,7 @@ def should_split_irregular_region(bbox_region, clean_mask):
     decision = split_score >= base_threshold
     print(f"Decision: {'SPLIT' if decision else 'KEEP'} (threshold: {base_threshold})")
     
-    return decision
+    return decision, math.floor(split_score)
             
 
 

@@ -361,6 +361,8 @@ def smooth_region_boundary(mask, smoothing_iterations=1):
 
 def visualize_cleaning_process(original_region, original_mask, cleaned_region, cleaned_mask):
     """Visualize the cleaning process."""
+
+    """
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     
     # Original region with mask
@@ -408,3 +410,4 @@ def visualize_cleaning_process(original_region, original_mask, cleaned_region, c
     
     plt.tight_layout()
     plt.show()
+    """
