@@ -746,7 +746,7 @@ def should_split_irregular_region(bbox_region, region_mask):
 
 # --- Example usage ---
 if __name__ == "__main__":
-    image = cv2.imread("images/nero.png")
+    image = cv2.imread("images/waikiki.jpg")
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
@@ -870,8 +870,18 @@ if __name__ == "__main__":
 
 """
 DA aggiungere: 
-- se la regione geenrata è piccola, non considerarla come generata, includerla come regione nella madre
+- se la regione geenrata è piccola, non considerarla come generata, includerla come regione nella madre.
+    Potenzialmenet, se la regione è abbatsanza piccola, suddividila con il knn
 - se la regione è piccola, non applicare tutti e 4 i criteri di suddivsione check
 - dividere il split score per il trheshold
 - aggiustare la bbox e mask. Quando c'è l'eliminaione dei pixel li'mmagine diventa più piccola. non va bene, i pixel dovrebbero rimanere nell'immagien completa
+
+Questo è l'output di nero.png
+Numero di regioni: 1
+Contours actually drawn: 1/1
+✅ Region 0: mask has 104000 active pixels
+Region 0: bbox=(0, 0, 399, 259), mask shape=(260, 400), region size=(259, 399), sum=104000
+ mask shape=(260, 400), region size=(259, 399), indica che si è perso un pixel per i bordi(?)
+ Se si fa a ripetizione se ne perdono molti
+
 """

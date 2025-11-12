@@ -14,7 +14,7 @@ from regions.irregular_region import should_split_irregular_region
 
 
 def main():
-    image_name = 'images/cerchio.jpg'
+    image_name = 'images/cerchio.png'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
