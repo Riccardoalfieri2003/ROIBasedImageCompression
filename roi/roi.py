@@ -348,7 +348,7 @@ def test_functions(test_image, visualization=False):
         #visualize_roi_detection(test_image, binary_roi, combined_roi, edges, density, saliency)
         visualize_individual_components(test_image, combined_roi)
 
-         # Create the red/blue plot
+        # Create the red/blue plot
         plot_detailed_roi_analysis(test_image, binary_roi)
     
     return binary_roi, combined_roi
@@ -380,7 +380,7 @@ def edge_preserving_preprocess(image):
 
 
 if __name__ == "__main__":
-    image_name = 'images/waikiki.jpg'
+    image_name = 'images/cerchio.png'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     mod_image=edge_preserving_preprocess(image_rgb)
