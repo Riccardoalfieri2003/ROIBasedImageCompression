@@ -272,17 +272,8 @@ def unify_black_pixels_in_white_regions(binary_image, window_size=30, white_thre
     
     return cleaned_image, region_map
 
+"""
 def remove_small_regions(binary_image, min_size=50):
-    """
-    Remove small connected components from binary image.
-    
-    Args:
-        binary_image: Binary image (0 and 255)
-        min_size: Minimum number of pixels for a region to be kept
-    
-    Returns:
-        cleaned_image: Binary image with small regions removed
-    """
     # Find all connected components
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_image, connectivity=8)
     
@@ -297,6 +288,83 @@ def remove_small_regions(binary_image, min_size=50):
             cleaned_image[labels == i] = 255
     
     return cleaned_image
+"""
+
+def remove_small_regions(binary_image, min_size=50, remove_thin_lines=True, kernel_size=3):
+    """
+    Remove small connected components and thin lines from binary image.
+    
+    Args:
+        binary_image: Binary image (0 and 255)
+        min_size: Minimum number of pixels for a region to be kept
+        remove_thin_lines: Whether to remove single-pixel lines
+        kernel_size: Size of morphological kernel
+    
+    Returns:
+        cleaned_image: Binary image with small regions and thin lines removed
+    """
+    # Find all connected components
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_image, connectivity=8)
+    
+    # Create output image
+    cleaned_image = np.zeros_like(binary_image)
+    
+    # Iterate through all components (skip background at index 0)
+    for i in range(1, num_labels):
+        # Check if the region is large enough
+        if stats[i, cv2.CC_STAT_AREA] >= min_size:
+            # Keep this region
+            cleaned_image[labels == i] = 255
+    
+    # Remove thin lines and single pixels using morphological operations
+    if remove_thin_lines:
+        cleaned_image = remove_thin_structures(cleaned_image, kernel_size)
+    
+    return cleaned_image
+
+def remove_thin_structures(binary_image, kernel_size=3):
+    """
+    Remove single-pixel lines and isolated pixels using morphological operations.
+    
+    Args:
+        binary_image: Binary image (0 and 255)
+        kernel_size: Size of the morphological kernel
+    
+    Returns:
+        cleaned_image: Binary image without thin structures
+    """
+    # Create morphological kernel
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    
+    # Method 1: Opening to remove small objects and thin lines
+    cleaned = cv2.morphologyEx(binary_image, cv2.MORPH_OPEN, kernel)
+    
+    # Method 2: Additional erosion to break thin connections
+    eroded = cv2.erode(cleaned, kernel, iterations=1)
+    
+    # Method 3: Reconstruction to restore original shapes but without thin parts
+    # This preserves larger regions while removing thin extensions
+    reconstructed = reconstruct_larger_regions(eroded, binary_image, kernel)
+    
+    return reconstructed
+
+def reconstruct_larger_regions(eroded_image, original_image, kernel):
+    """
+    Reconstruct regions while preserving only substantial parts.
+    """
+    # Use dilation to rebuild regions, but only where they were substantial
+    marker = eroded_image.copy()
+    reconstructed = cv2.dilate(marker, kernel, iterations=1)
+    reconstructed = cv2.bitwise_and(reconstructed, original_image)
+    
+    # Repeat to ensure good reconstruction
+    for _ in range(2):
+        reconstructed = cv2.dilate(reconstructed, kernel, iterations=1)
+        reconstructed = cv2.bitwise_and(reconstructed, original_image)
+    
+    return reconstructed
+
+
 
 # Alternative version using morphological operations for faster processing
 def remove_small_regions_fast(binary_image, min_size=50):
@@ -339,12 +407,10 @@ def visualize_unification_process(original_binary, unified_image, region_map, wi
     plt.tight_layout()
     plt.show()
 
-
+"""
 def process_and_unify_borders(edge_map, edge_density, original_image, density_threshold=0.3, 
                             unification_window=30, unification_threshold=0.5, min_region_size=50):
-    """
-    Complete pipeline: filter edges by density, then unify regions, remove small regions.
-    """
+
     # Step 1: Get high-density borders (your existing approach)
     high_density_mask = edge_density > density_threshold
     intensity_borders = edge_map.copy()
@@ -417,6 +483,8 @@ def process_and_unify_borders(edge_map, edge_density, original_image, density_th
     print(f"Region 0 size: {np.sum(region_map == 0)} pixels")
     
     return unified_borders, region_map
+"""
+
 
 # Alternative visualization with more detailed overlay
 def visualize_detailed_regions(original_image, region_map, unified_borders):
@@ -452,42 +520,6 @@ def visualize_detailed_regions(original_image, region_map, unified_borders):
     plt.tight_layout()
     plt.show()
 
-"""
-# Updated main function with overlay visualization
-if __name__ == "__main__":
-    image_name = 'images/Hawaii.jpg'
-    image = cv2.imread(image_name)
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-    print(f"Size: {image_rgb.size}")
-    factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
-    print(f"factor: {factor}")
-
-    # Compute edges and density
-    edge_map = cv2.Canny(image_rgb, 50, 150)
-    edge_density = compute_local_density(edge_map, kernel_size=15)
-    
-    threshold = suggest_automatic_threshold(edge_density, edge_map, method="percentile")
-    thresholds = [threshold/5, threshold/2.5, threshold]
-
-    window_size = math.floor(factor)
-    min_region_size= math.ceil( image_rgb.size / math.pow(10, math.ceil(math.log(image_rgb.size, 10))-3 ) )
-    print(f"min_region_size: {min_region_size}")
-
-
-    for i, threshold in enumerate(thresholds):
-        print(f"\n=== Test {i+1}: Window: {window_size}x{window_size}, Threshold: {threshold:.3f} ===")
-        unified, regions = process_and_unify_borders(
-            edge_map, edge_density, image_rgb,  # Pass original image for overlay
-            density_threshold=0.05,
-            unification_window=window_size,
-            unification_threshold=threshold,
-            min_region_size=min_region_size
-        )
-        
-        # Additional detailed visualization
-        visualize_detailed_regions(image_rgb, regions, unified)
-"""
 
 
 
@@ -624,9 +656,13 @@ def find_best_threshold_method(edge_density_map, edge_map):
     final_threshold = optimize_threshold_automatically(edge_density_map, edge_map, best_method)
     return final_threshold, best_method, best_score
 
+
+
+
+"""
 # Updated usage in your main function:
 if __name__ == "__main__":
-    image_name = 'images/Lenna.webp'
+    image_name = 'images/kauai.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
@@ -656,3 +692,387 @@ if __name__ == "__main__":
     print(f"Best method: {best_method}")
     print(f"Best threshold: {best_threshold:.3f}")
     print(f"Separation score: {best_score:.3f}")
+"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def extract_roi_nonroi(original_image, region_map):
+    """
+    Extract ROI and non-ROI regions from original image.
+    
+    Args:
+        original_image: Original RGB image
+        region_map: Binary region map (1=ROI, 0=non-ROI)
+    
+    Returns:
+        roi_image: Image showing only ROI regions
+        nonroi_image: Image showing only non-ROI regions
+        roi_mask: Binary mask for ROI
+        nonroi_mask: Binary mask for non-ROI
+    """
+    # Create masks
+    roi_mask = (region_map == 1)
+    nonroi_mask = (region_map == 0)
+    
+    # Create ROI image (keep ROI pixels, black out non-ROI)
+    roi_image = original_image.copy()
+    roi_image[~roi_mask] = 0  # Set non-ROI to black
+    
+    # Create non-ROI image (keep non-ROI pixels, black out ROI)
+    nonroi_image = original_image.copy()
+    nonroi_image[~nonroi_mask] = 0  # Set ROI to black
+    
+    return roi_image, nonroi_image, roi_mask, nonroi_mask
+
+def visualize_roi_nonroi_comparison(original_image, roi_image, nonroi_image, region_map):
+    """
+    Visualize ROI and non-ROI regions side by side.
+    """
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    
+    # Row 1: Original and masks
+    axes[0, 0].imshow(original_image)
+    axes[0, 0].set_title('Original Image')
+    axes[0, 0].axis('off')
+    
+    axes[0, 1].imshow(region_map, cmap='tab10')
+    axes[0, 1].set_title('Region Map\n(1=ROI, 0=non-ROI)')
+    axes[0, 1].axis('off')
+    
+    # Overlay visualization
+    axes[0, 2].imshow(original_image)
+    overlay = np.zeros_like(original_image)
+    overlay[region_map == 1] = [255, 0, 0]  # Red for ROI
+    axes[0, 2].imshow(overlay, alpha=0.6)
+    axes[0, 2].set_title('ROI Overlay (Red)')
+    axes[0, 2].axis('off')
+    
+    # Row 2: ROI and non-ROI extracted
+    axes[1, 0].imshow(roi_image)
+    roi_pixels = np.sum(region_map == 1)
+    axes[1, 0].set_title(f'ROI Regions\n{roi_pixels} pixels')
+    axes[1, 0].axis('off')
+    
+    axes[1, 1].imshow(nonroi_image)
+    nonroi_pixels = np.sum(region_map == 0)
+    axes[1, 1].set_title(f'non-ROI Regions\n{nonroi_pixels} pixels')
+    axes[1, 1].axis('off')
+    
+    # Statistics
+    axes[1, 2].axis('off')
+    axes[1, 2].text(0.1, 0.9, 'Region Statistics:', fontsize=12, fontweight='bold')
+    axes[1, 2].text(0.1, 0.7, f'Total pixels: {original_image.shape[0] * original_image.shape[1]}', fontsize=10)
+    axes[1, 2].text(0.1, 0.6, f'ROI pixels: {roi_pixels} ({roi_pixels/(roi_pixels+nonroi_pixels)*100:.1f}%)', fontsize=10)
+    axes[1, 2].text(0.1, 0.5, f'non-ROI pixels: {nonroi_pixels} ({nonroi_pixels/(roi_pixels+nonroi_pixels)*100:.1f}%)', fontsize=10)
+    axes[1, 2].set_xlim(0, 1)
+    axes[1, 2].set_ylim(0, 1)
+    axes[1, 2].set_facecolor('lightgray')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+# Updated process function that returns ROI and non-ROI
+def process_and_unify_borders(edge_map, edge_density, original_image, density_threshold=0.3, 
+                            unification_window=30, unification_threshold=0.5, min_region_size=50):
+    """
+    Complete pipeline: filter edges by density, then unify regions, remove small regions.
+    Returns ROI and non-ROI separately.
+    """
+    # Step 1: Get high-density borders (your existing approach)
+    high_density_mask = edge_density > density_threshold
+    intensity_borders = edge_map.copy()
+    intensity_borders[~high_density_mask] = 0
+    
+    # Convert to binary (0 and 255)
+    binary_borders = (intensity_borders > 0).astype(np.uint8) * 255
+    
+    # Step 2: Unify black pixels in white regions with small region removal
+    unified_borders, region_map = unify_black_pixels_in_white_regions(
+        binary_borders, 
+        window_size=unification_window, 
+        white_threshold=unification_threshold,
+        min_region_size=min_region_size
+    )
+    
+    # Extract ROI and non-ROI
+    roi_image, nonroi_image, roi_mask, nonroi_mask = extract_roi_nonroi(original_image, region_map)
+    
+    # Create visualization
+    visualize_roi_nonroi_comparison(original_image, roi_image, nonroi_image, region_map)
+    
+    print(f"=== ROI/non-ROI Statistics ===")
+    print(f"ROI coverage: {np.sum(roi_mask)} pixels ({np.sum(roi_mask)/roi_mask.size*100:.1f}%)")
+    print(f"non-ROI coverage: {np.sum(nonroi_mask)} pixels ({np.sum(nonroi_mask)/nonroi_mask.size*100:.1f}%)")
+    
+    return unified_borders, region_map, roi_image, nonroi_image, roi_mask, nonroi_mask
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+from skimage.segmentation import slic, mark_boundaries
+from skimage.util import img_as_float
+import matplotlib.pyplot as plt
+
+def apply_slic_to_roi(original_image, roi_mask, n_segments=100, compactness=10):
+    """
+    Apply SLIC segmentation ONLY to the ROI region.
+    
+    Args:
+        original_image: Original RGB image
+        roi_mask: Your detected ROI mask (binary)
+        n_segments: Approximate number of segments (for ROI region only)
+        compactness: Balance between color and space proximity
+    
+    Returns:
+        roi_slic_segments: SLIC segmentation labels (only within ROI, 0 elsewhere)
+        roi_slic_boundaries: Image with segment boundaries only in ROI
+        roi_segment_ids: List of segment IDs found in ROI
+    """
+    # Convert image to float for SLIC
+    image_float = img_as_float(original_image)
+    
+    # Create a mask of ROI coordinates
+    roi_coords = np.where(roi_mask)
+    
+    if len(roi_coords[0]) == 0:
+        print("No ROI regions found!")
+        return np.zeros_like(roi_mask), original_image, []
+    
+    # Get the bounding box of ROI to reduce computation area
+    y_min, y_max = np.min(roi_coords[0]), np.max(roi_coords[0])
+    x_min, x_max = np.min(roi_coords[1]), np.max(roi_coords[1])
+    
+    # Extract ROI region with some padding
+    padding = 10
+    roi_region = image_float[
+        max(0, y_min-padding):min(image_float.shape[0], y_max+padding),
+        max(0, x_min-padding):min(image_float.shape[1], x_max+padding)
+    ]
+    
+    roi_region_mask = roi_mask[
+        max(0, y_min-padding):min(image_float.shape[0], y_max+padding),
+        max(0, x_min-padding):min(image_float.shape[1], x_max+padding)
+    ]
+    
+    print(f"ROI region size: {roi_region.shape}, Original: {image_float.shape}")
+    
+    # Apply SLIC only to the ROI region
+    try:
+        roi_slic_segments_region = slic(roi_region, 
+                                      n_segments=n_segments, 
+                                      compactness=compactness, 
+                                      sigma=1,
+                                      mask=roi_region_mask,  # Only segment within ROI mask
+                                      start_label=1)
+        
+        # Create full-size segmentation map (0 = background, >0 = segments)
+        roi_slic_segments_full = np.zeros_like(roi_mask, dtype=np.int32)
+        roi_slic_segments_full[
+            max(0, y_min-padding):min(image_float.shape[0], y_max+padding),
+            max(0, x_min-padding):min(image_float.shape[1], x_max+padding)
+        ] = roi_slic_segments_region
+        
+        # Create boundaries only in ROI region
+        roi_slic_boundaries = mark_boundaries(image_float, roi_slic_segments_full, color=(1, 0, 0))
+        
+        # Get unique segment IDs (excluding 0)
+        roi_segment_ids = np.unique(roi_slic_segments_full)
+        roi_segment_ids = roi_segment_ids[roi_segment_ids > 0]
+        
+        print(f"SLIC found {len(roi_segment_ids)} segments within ROI")
+        
+        # Create visualization
+        visualize_roi_slic_comparison(original_image, roi_mask, roi_slic_segments_full, 
+                                    roi_slic_boundaries, roi_segment_ids)
+        
+        return roi_slic_segments_full, roi_slic_boundaries, roi_segment_ids
+        
+    except Exception as e:
+        print(f"SLIC failed on ROI region: {e}")
+        # Fallback: apply to whole image but mask results
+        print("Falling back to whole-image SLIC with ROI masking...")
+        slic_segments_full = slic(image_float, n_segments=n_segments, compactness=compactness, sigma=1, start_label=1)
+        # Mask out non-ROI regions
+        roi_slic_segments_full = slic_segments_full * roi_mask.astype(np.int32)
+        roi_slic_boundaries = mark_boundaries(image_float, roi_slic_segments_full, color=(1, 0, 0))
+        roi_segment_ids = np.unique(roi_slic_segments_full)
+        roi_segment_ids = roi_segment_ids[roi_segment_ids > 0]
+        
+        visualize_roi_slic_comparison(original_image, roi_mask, roi_slic_segments_full, 
+                                    roi_slic_boundaries, roi_segment_ids)
+        return roi_slic_segments_full, roi_slic_boundaries, roi_segment_ids
+
+def visualize_roi_slic_comparison(original_image, roi_mask, roi_slic_segments, roi_slic_boundaries, roi_segment_ids):
+    """
+    Visualize SLIC results applied only to ROI.
+    """
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    
+    # Row 1: Original and ROI detection
+    axes[0, 0].imshow(original_image)
+    axes[0, 0].set_title('Original Image')
+    axes[0, 0].axis('off')
+    
+    # Your ROI detection
+    axes[0, 1].imshow(original_image)
+    roi_overlay = np.zeros_like(original_image)
+    roi_overlay[roi_mask] = [255, 0, 0]  # Red for ROI
+    axes[0, 1].imshow(roi_overlay, alpha=0.6)
+    axes[0, 1].set_title('Your ROI Detection')
+    axes[0, 1].axis('off')
+    
+    # ROI only
+    roi_image = original_image.copy()
+    roi_image[~roi_mask] = 0
+    axes[0, 2].imshow(roi_image)
+    axes[0, 2].set_title('ROI Region Only')
+    axes[0, 2].axis('off')
+    
+    # Row 2: SLIC on ROI only
+    axes[1, 0].imshow(roi_slic_segments, cmap='tab20')
+    axes[1, 0].set_title(f'SLIC Segments in ROI\n{len(roi_segment_ids)} regions')
+    axes[1, 0].axis('off')
+    
+    axes[1, 1].imshow(roi_slic_boundaries)
+    axes[1, 1].set_title('SLIC Boundaries in ROI')
+    axes[1, 1].axis('off')
+    
+    # Combined view: Your ROI + SLIC segments
+    axes[1, 2].imshow(original_image)
+    # Your ROI in red
+    roi_overlay = np.zeros_like(original_image)
+    roi_overlay[roi_mask] = [255, 0, 0]  # Red for your ROI
+    axes[1, 2].imshow(roi_overlay, alpha=0.3)
+    # SLIC boundaries in green
+    slic_boundary_mask = mark_boundaries(np.ones_like(roi_slic_segments), roi_slic_segments, color=(1, 0, 0))[:,:,0] < 0.5
+    slic_boundary_overlay = np.zeros_like(original_image)
+    slic_boundary_overlay[slic_boundary_mask] = [0, 255, 0]  # Green for SLIC boundaries
+    axes[1, 2].imshow(slic_boundary_overlay, alpha=0.7)
+    axes[1, 2].set_title('Your ROI (Red) + SLIC Boundaries (Green)')
+    axes[1, 2].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print(f"\n=== ROI-SLIC Analysis ===")
+    print(f"SLIC segments within ROI: {len(roi_segment_ids)}")
+    print(f"ROI area: {np.sum(roi_mask)} pixels")
+    print(f"Average segment size: {np.sum(roi_mask) / len(roi_segment_ids):.0f} pixels/segment")
+
+# Updated main function with ROI-only SLIC
+if __name__ == "__main__":
+    image_name = 'images/waikiki.jpg'
+    image = cv2.imread(image_name)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    print(f"Size: {image_rgb.size}")
+    factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
+    print(f"factor: {factor}")
+
+    # Compute edges and density
+    edge_map = cv2.Canny(image_rgb, 50, 150)
+    edge_density = compute_local_density(edge_map, kernel_size=15)
+    
+    threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") / 5
+    
+    window_size = math.floor(factor)
+    min_region_size= math.ceil( image_rgb.size / math.pow(10, math.ceil(math.log(image_rgb.size, 10))-3 ) )
+    print(f"min_region_size: {min_region_size}")
+
+    print(f"\nWindow: {window_size}x{window_size}, Threshold: {threshold:.3f} ===")
+    
+    # Get ROI detection results
+    unified, regions, roi_image, nonroi_image, roi_mask, nonroi_mask = process_and_unify_borders(
+        edge_map, edge_density, image_rgb,
+        density_threshold=0.05,
+        unification_window=window_size,
+        unification_threshold=threshold,
+        min_region_size=min_region_size
+    )
+    
+    # Now apply SLIC ONLY to the ROI region
+    print(f"\n=== Applying SLIC to ROI Region Only ===")
+    
+    # Adjust n_segments based on ROI size
+    roi_area = np.sum(roi_mask)
+    base_segments = max(25, min(200, int(roi_area / 1000)))  # Adaptive segment count
+    
+    """slic_configs = [
+        {'n_segments': base_segments, 'compactness': 10, 'name': 'Standard'},
+        {'n_segments': base_segments // 2, 'compactness': 5, 'name': 'Coarse'},
+        {'n_segments': base_segments * 2, 'compactness': 20, 'name': 'Fine'}
+    ]"""
+
+    slic_configs = [
+        {'n_segments': 10, 'compactness': 10, 'name': 'Standard'},
+    ]
+    
+    for config in slic_configs:
+        print(f"\n--- SLIC {config['name']} on ROI (segments: {config['n_segments']}) ---")
+        roi_slic_segments, roi_slic_boundaries, roi_segment_ids = apply_slic_to_roi(
+            image_rgb, 
+            roi_mask,
+            n_segments=config['n_segments'],
+            compactness=config['compactness']
+        )

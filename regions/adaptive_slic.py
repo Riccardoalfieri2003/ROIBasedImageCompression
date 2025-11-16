@@ -163,7 +163,7 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
 from image_cleaning import comprehensive_region_cleaning, remove_small_components
 
 
-def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compactness=1, sigma=1, base_segments=3):
+def recursive_slic_adaptive(initial_image, image, mask=None, depth_limit=None, depth=0, compactness=1, sigma=1, base_segments=3):
 
 
     debug=False 
@@ -197,8 +197,8 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
         #should_split_result = should_split(bbox_region)
 
         # Option 1: Test with the entire image as a "rectangle" region
-        bbox_region = image_rgb  # The entire image
-        clean_mask = np.ones(image_rgb.shape[:2], dtype=bool)  # Full mask
+        bbox_region = initial_image  # The entire image
+        clean_mask = np.ones(initial_image.shape[:2], dtype=bool)  # Full mask
 
         should_split_result, n_segments = should_split_irregular_region(bbox_region, clean_mask, debug=False)
         print(f"Depth {depth}: Analyzing full rectangular region")
@@ -207,7 +207,7 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
 
     else:
 
-        min_size=image_rgb.size/1000
+        min_size=initial_image.size/1000
 
         cleaned_region, cleaned_mask = comprehensive_region_cleaning(
             bbox_region, bbox_mask, 
@@ -311,7 +311,7 @@ def recursive_slic_adaptive(image, mask=None, depth_limit=None, depth=0, compact
         plt.axis('off')
         """
 
-        min_size=image_rgb.size/1000
+        min_size=initial_image.size/1000
 
         # In your recursive function, update the visualization part:
         if depth == 0 or np.all(bbox_mask):
@@ -743,24 +743,17 @@ def should_split_irregular_region(bbox_region, region_mask):
 
 
 
-
+"""
 # --- Example usage ---
 if __name__ == "__main__":
     image = cv2.imread("images/waikiki.jpg")
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
-    """lab = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2LAB)
-    l, a, b = cv2.split(lab)
-
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-    l_clahe = clahe.apply(l)
-
-    lab_clahe = cv2.merge((l_clahe, a, b))
-    img_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2RGB)"""
 
 
     all_segments = recursive_slic_adaptive(
+        image_rgb,
         image_rgb,
         depth_limit=3,  # optional
         base_segments=3,
@@ -864,7 +857,7 @@ if __name__ == "__main__":
         plt.axis("off")
         plt.show()
 
-    
+"""
 
 
 
