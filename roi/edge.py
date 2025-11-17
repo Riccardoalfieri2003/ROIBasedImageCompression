@@ -31,15 +31,20 @@ import numpy as np
 
 
 def edge_preserving_preprocess(image):
-
+    """
+    Specifically designed for your use case: enhance edges, blur interiors
+    """
+    # Step 1: Strong bilateral filter to blur interiors while preserving edges
+    smoothed = cv2.bilateralFilter(image, 5, 20, 20)
+    
     # Step 2: Edge enhancement using Laplacian
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    gray = cv2.cvtColor(smoothed, cv2.COLOR_RGB2GRAY)
     laplacian = cv2.Laplacian(gray, cv2.CV_64F)
     sharpened_gray = gray - 0.5 * laplacian
     sharpened_gray = np.clip(sharpened_gray, 0, 255).astype(np.uint8)
     
     # Step 3: Merge enhanced edges back with smoothed color
-    lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
+    lab = cv2.cvtColor(smoothed, cv2.COLOR_RGB2LAB)
     l, a, b = cv2.split(lab)
     enhanced_l = cv2.addWeighted(l, 0.7, sharpened_gray, 0.3, 0)
     final_lab = cv2.merge([enhanced_l, a, b])
@@ -1020,7 +1025,303 @@ def visualize_roi_slic_comparison(original_image, roi_mask, roi_slic_segments, r
     print(f"ROI area: {np.sum(roi_mask)} pixels")
     print(f"Average segment size: {np.sum(roi_mask) / len(roi_segment_ids):.0f} pixels/segment")
 
-# Updated main function with ROI-only SLIC
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def adaptive_edge_preserving_preprocess(image):
+    """
+    Adaptive edge-preserving preprocessing based on image characteristics.
+    """
+    # Analyze image edges first to determine parameters
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    
+    # Calculate edge statistics
+    edges = cv2.Canny(gray, 50, 150)
+    edge_density = np.sum(edges > 0) / edges.size
+    edge_intensity_variance = np.var(gray)
+    
+    print(f"Edge density: {edge_density:.3f}, Intensity variance: {edge_intensity_variance:.1f}")
+    
+    # Adaptive bilateral filter parameters
+    if edge_density > 0.1:  # High edge density (busy image)
+        d = 5  # Smaller neighborhood
+        sigma_color = 15    # More color preservation
+        sigma_space = 15    # More spatial preservation
+        laplacian_weight = 0.3  # Less sharpening
+    elif edge_density < 0.02:  # Low edge density (smooth image)
+        d = 9  # Larger neighborhood
+        sigma_color = 25    # More smoothing
+        sigma_space = 25    # More smoothing
+        laplacian_weight = 0.7  # More sharpening
+    else:  # Medium edge density
+        d = 7
+        sigma_color = 20
+        sigma_space = 20
+        laplacian_weight = 0.5
+    
+    # Adjust based on intensity variance (texture complexity)
+    if edge_intensity_variance > 1000:  # High texture
+        sigma_color = max(10, sigma_color - 5)
+        laplacian_weight = min(0.8, laplacian_weight + 0.1)
+    
+    # Step 1: Adaptive bilateral filter
+    smoothed = cv2.bilateralFilter(image, d, sigma_color, sigma_space)
+    
+    # Step 2: Adaptive edge enhancement
+    gray_smoothed = cv2.cvtColor(smoothed, cv2.COLOR_RGB2GRAY)
+    laplacian = cv2.Laplacian(gray_smoothed, cv2.CV_64F)
+    sharpened_gray = gray_smoothed - laplacian_weight * laplacian
+    sharpened_gray = np.clip(sharpened_gray, 0, 255).astype(np.uint8)
+    
+    # Step 3: Adaptive merging
+    lab = cv2.cvtColor(smoothed, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    
+    # Adjust blending based on edge characteristics
+    blend_weight = 0.3 if edge_density > 0.05 else 0.5
+    enhanced_l = cv2.addWeighted(l, 1 - blend_weight, sharpened_gray, blend_weight, 0)
+    
+    final_lab = cv2.merge([enhanced_l, a, b])
+    final = cv2.cvtColor(final_lab, cv2.COLOR_LAB2RGB)
+    
+    return final
+
+def multi_scale_adaptive_preprocess(image):
+    """
+    Use multi-scale analysis to determine optimal parameters.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    
+    # Multi-scale edge analysis
+    scales = [1, 2, 4]  # Different scales for analysis
+    edge_maps = []
+    
+    for scale in scales:
+        # Resize for multi-scale analysis
+        if scale > 1:
+            small = cv2.resize(gray, (gray.shape[1]//scale, gray.shape[0]//scale))
+            edges = cv2.Canny(small, 50, 150)
+            edges = cv2.resize(edges, (gray.shape[1], gray.shape[0]))
+        else:
+            edges = cv2.Canny(gray, 50, 150)
+        edge_maps.append(edges)
+    
+    # Combine edge information from different scales
+    combined_edges = np.max(np.stack(edge_maps), axis=0)
+    edge_density = np.sum(combined_edges > 0) / combined_edges.size
+    
+    # Calculate texture complexity using GLCM-like features
+    from scipy import ndimage
+    gradients_x = ndimage.sobel(gray, axis=1)
+    gradients_y = ndimage.sobel(gray, axis=0)
+    gradient_magnitude = np.sqrt(gradients_x**2 + gradients_y**2)
+    texture_complexity = np.mean(gradient_magnitude)
+    
+    print(f"Multi-scale edge density: {edge_density:.3f}")
+    print(f"Texture complexity: {texture_complexity:.1f}")
+    
+    # Determine parameters based on multi-scale analysis
+    if edge_density > 0.08 and texture_complexity > 20:
+        # Complex texture, many edges
+        d, sigma_color, sigma_space = 5, 12, 12
+        sharpening = 0.4
+    elif edge_density < 0.02 and texture_complexity < 10:
+        # Smooth, few edges
+        d, sigma_color, sigma_space = 9, 30, 30
+        sharpening = 0.8
+    else:
+        # Moderate complexity
+        d, sigma_color, sigma_space = 7, 20, 20
+        sharpening = 0.5
+    
+    # Apply processing
+    smoothed = cv2.bilateralFilter(image, d, sigma_color, sigma_space)
+    
+    # Enhanced edge sharpening
+    gray_smoothed = cv2.cvtColor(smoothed, cv2.COLOR_RGB2GRAY)
+    laplacian = cv2.Laplacian(gray_smoothed, cv2.CV_64F)
+    sharpened_gray = gray_smoothed - sharpening * laplacian
+    sharpened_gray = np.clip(sharpened_gray, 0, 255).astype(np.uint8)
+    
+    # Adaptive blending
+    lab = cv2.cvtColor(smoothed, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    blend_ratio = 0.7 if texture_complexity > 25 else 0.3
+    enhanced_l = cv2.addWeighted(l, blend_ratio, sharpened_gray, 1 - blend_ratio, 0)
+    
+    final_lab = cv2.merge([enhanced_l, a, b])
+    final = cv2.cvtColor(final_lab, cv2.COLOR_LAB2RGB)
+    
+    return final
+
+def histogram_adaptive_preprocess(image):
+    """
+    Use histogram analysis to determine optimal parameters.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    
+    # Histogram analysis
+    hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+    hist = hist.flatten() / hist.sum()  # Normalize
+    
+    # Calculate histogram statistics
+    entropy = -np.sum(hist * np.log2(hist + 1e-10))  # Image entropy
+    contrast = np.std(gray)  # Contrast measure
+    
+    print(f"Image entropy: {entropy:.3f}, Contrast: {contrast:.1f}")
+    
+    # Determine parameters based on histogram characteristics
+    if entropy > 6.5 and contrast > 50:
+        # High entropy, high contrast (complex image)
+        d, sigma_color, sigma_space = 5, 15, 15
+        sharpening = 0.3
+    elif entropy < 5.0 and contrast < 30:
+        # Low entropy, low contrast (simple image)
+        d, sigma_color, sigma_space = 9, 25, 25
+        sharpening = 0.7
+    else:
+        d, sigma_color, sigma_space = 7, 20, 20
+        sharpening = 0.5
+    
+    # Apply processing
+    smoothed = cv2.bilateralFilter(image, d, sigma_color, sigma_space)
+    
+    gray_smoothed = cv2.cvtColor(smoothed, cv2.COLOR_RGB2GRAY)
+    laplacian = cv2.Laplacian(gray_smoothed, cv2.CV_64F)
+    sharpened_gray = gray_smoothed - sharpening * laplacian
+    sharpened_gray = np.clip(sharpened_gray, 0, 255).astype(np.uint8)
+    
+    lab = cv2.cvtColor(smoothed, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    
+    # Adaptive blending based on contrast
+    blend_weight = 0.7 if contrast > 60 else 0.3
+    enhanced_l = cv2.addWeighted(l, blend_weight, sharpened_gray, 1 - blend_weight, 0)
+    
+    final_lab = cv2.merge([enhanced_l, a, b])
+    final = cv2.cvtColor(final_lab, cv2.COLOR_LAB2RGB)
+    
+    return final
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+if __name__ == "__main__":
+    image_name = 'images/Hawaii.jpg'
+    image = cv2.imread(image_name)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    # Convert to grayscale once
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    
+    # Define threshold pairs to test (low_threshold, high_threshold)
+    threshold_pairs = [
+        (50, 150),    # Standard
+        (30, 100),    # More sensitive (more edges)
+        (100, 200),   # Less sensitive (fewer edges)
+        (20, 50),     # Very sensitive
+        (150, 250),   # Very conservative
+        (75, 175),    # Middle ground
+    ]
+    
+    # Create subplots - 2 rows, 3 columns for the 6 threshold pairs
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.ravel()  # Flatten for easy iteration
+    
+    # Test each threshold pair directly in the 6 subplots
+    for i, (low, high) in enumerate(threshold_pairs):
+        edges = cv2.Canny(gray, low, high)
+        edge_count = np.sum(edges > 0)
+        
+        axes[i].imshow(edges, cmap='gray')
+        axes[i].set_title(f'Canny({low}, {high})\n{edge_count} edge pixels')
+        axes[i].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+"""
+
+
+
+
+
+
+
+"""if __name__ == "__main__":
+    image_name = 'images/waikiki.jpg'
+    image = cv2.imread(image_name)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    print(f"Size: {image_rgb.size}")
+    factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
+    print(f"factor: {factor}")
+    
+    # Test different adaptive methods
+    methods = [
+        adaptive_edge_preserving_preprocess,
+        multi_scale_adaptive_preprocess,
+        histogram_adaptive_preprocess
+    ]
+    
+    for method in methods:
+        print(f"\n=== Testing {method.__name__} ===")
+        processed = method(image_rgb)
+        
+        # Compare with your ROI detection
+        best_edges, best_low, best_high, best_method = find_best_edges_by_quality(image_rgb)
+        edge_map = cv2.Canny(processed, best_low, best_high)
+        edge_density = compute_local_density(edge_map, kernel_size=15)
+    
+        threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") / 5
+        
+        window_size = math.floor(factor)
+        min_region_size= math.ceil( image_rgb.size / math.pow(10, math.ceil(math.log(image_rgb.size, 10))-3 ) )
+        print(f"min_region_size: {min_region_size}")
+
+        print(f"\nWindow: {window_size}x{window_size}, Threshold: {threshold:.3f} ===")
+        
+        # Get ROI detection results
+        unified, regions, roi_image, nonroi_image, roi_mask, nonroi_mask = process_and_unify_borders(
+            edge_map, edge_density, image_rgb,
+            density_threshold=0.05,
+            unification_window=window_size,
+            unification_threshold=threshold,
+            min_region_size=min_region_size
+        )
+
+
+"""
+
+
+
+from edges import get_edge_map
+
 if __name__ == "__main__":
     image_name = 'images/waikiki.jpg'
     image = cv2.imread(image_name)
@@ -1029,11 +1330,41 @@ if __name__ == "__main__":
     print(f"Size: {image_rgb.size}")
     factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
     print(f"factor: {factor}")
-
-    # Compute edges and density
-    edge_map = cv2.Canny(image_rgb, 50, 150)
-    edge_density = compute_local_density(edge_map, kernel_size=15)
     
+    
+
+    # Compare with your ROI detection
+    edge_map = get_edge_map(image_rgb)
+    edge_density = compute_local_density(edge_map, kernel_size=3)
+    
+
+
+    """
+    # Visualize the density map
+    plt.figure(figsize=(15, 5))
+    
+    plt.subplot(1, 3, 1)
+    plt.imshow(image_rgb)
+    plt.title('Original Image')
+    plt.axis('off')
+    
+    plt.subplot(1, 3, 2)
+    plt.imshow(edge_map, cmap='gray')
+    plt.title('Edge Map')
+    plt.axis('off')
+    
+    plt.subplot(1, 3, 3)
+    plt.imshow(edge_density, cmap='hot')
+    plt.colorbar()
+    plt.title('Edge Density Map')
+    plt.axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+    """
+
+
     threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") / 5
     
     window_size = math.floor(factor)
@@ -1051,28 +1382,4 @@ if __name__ == "__main__":
         min_region_size=min_region_size
     )
     
-    # Now apply SLIC ONLY to the ROI region
-    print(f"\n=== Applying SLIC to ROI Region Only ===")
-    
-    # Adjust n_segments based on ROI size
-    roi_area = np.sum(roi_mask)
-    base_segments = max(25, min(200, int(roi_area / 1000)))  # Adaptive segment count
-    
-    """slic_configs = [
-        {'n_segments': base_segments, 'compactness': 10, 'name': 'Standard'},
-        {'n_segments': base_segments // 2, 'compactness': 5, 'name': 'Coarse'},
-        {'n_segments': base_segments * 2, 'compactness': 20, 'name': 'Fine'}
-    ]"""
 
-    slic_configs = [
-        {'n_segments': 10, 'compactness': 10, 'name': 'Standard'},
-    ]
-    
-    for config in slic_configs:
-        print(f"\n--- SLIC {config['name']} on ROI (segments: {config['n_segments']}) ---")
-        roi_slic_segments, roi_slic_boundaries, roi_segment_ids = apply_slic_to_roi(
-            image_rgb, 
-            roi_mask,
-            n_segments=config['n_segments'],
-            compactness=config['compactness']
-        )
