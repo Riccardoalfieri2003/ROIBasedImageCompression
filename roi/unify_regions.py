@@ -7,12 +7,7 @@ import numpy as np
 
 
 
-
-def unify_with_morphology(binary_image, gap_size=2, min_region_size=50):
-    """
-    Use morphological operations to fill small gaps in edge regions.
-    More conservative - only fills actual gaps, not nearby areas.
-    """
+"""def unify_with_morphology(binary_image, gap_size=2, min_region_size=50):
     # Convert to binary
     binary = binary_image.copy() if binary_image.max() > 1 else binary_image * 255
     binary = (binary > 0).astype(np.uint8) * 255
@@ -39,9 +34,92 @@ def unify_with_morphology(binary_image, gap_size=2, min_region_size=50):
     cleaned = remove_small_regions(unified, min_size=min_region_size)
     region_map = (cleaned > 0).astype(np.uint8)
     
+    return cleaned, region_map"""
+
+
+def unify_with_morphology(binary_image, gap_size=2, min_region_size=50):
+    # Convert to binary
+    binary = binary_image.copy() if binary_image.max() > 1 else binary_image * 255
+    binary = (binary > 0).astype(np.uint8) * 255
+    
+    # Use closing to fill small gaps in existing edge regions
+    kernel_size = max(1, gap_size)
+    #kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ERODE, (kernel_size, kernel_size))
+    
+    # Close small gaps within edge regions
+    closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    
+    # Only keep the filled pixels that are connected to original edges
+    # This prevents creating new disconnected regions
+    filled_gaps = cv2.bitwise_and(closed, cv2.bitwise_not(binary))
+    
+    # Only keep filled gaps that are surrounded by edges (dilate original and check)
+    dilated_edges = cv2.dilate(binary, kernel, iterations=1)
+    valid_fills = cv2.bitwise_and(filled_gaps, dilated_edges)
+    
+    # Combine original edges with valid filled gaps
+    unified = cv2.bitwise_or(binary, valid_fills)
+    
+    # Remove small regions
+    cleaned = remove_small_regions(unified, min_size=min_region_size)
+    region_map = (cleaned > 0).astype(np.uint8)
+    
     return cleaned, region_map
 
 
+
+
+"""def unify_with_morphology(binary_image, gap_size=2, min_region_size=50, kernel_type='rect'):
+
+    binary = binary_image.copy() if binary_image.max() > 1 else binary_image * 255
+    binary = (binary > 0).astype(np.uint8) * 255
+    
+    # Choose different kernel types
+    kernel_size = max(1, gap_size)
+    
+    if kernel_type == 'rect':
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+    elif kernel_type == 'cross':
+        kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (kernel_size, kernel_size))
+    elif kernel_type == 'ellipse':
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    else:
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+    
+    # Alternative approach: Use multiple iterations with smaller kernel
+    if kernel_type == 'multi_pass':
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+        closed = binary.copy()
+        for _ in range(gap_size):
+            closed = cv2.morphologyEx(closed, cv2.MORPH_CLOSE, kernel)
+    else:
+        closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    
+    # More conservative gap filling
+    filled_gaps = cv2.bitwise_and(closed, cv2.bitwise_not(binary))
+    
+    # Stricter validation: gaps must be completely surrounded
+    dilated_edges = cv2.dilate(binary, kernel, iterations=2)
+    valid_fills = cv2.bitwise_and(filled_gaps, dilated_edges)
+    
+    # Only add gaps that don't create isolated islands
+    from scipy import ndimage
+    filled_labels, num_fills = ndimage.label(valid_fills)
+    
+    final_fills = np.zeros_like(valid_fills)
+    for label in range(1, num_fills + 1):
+        fill_region = (filled_labels == label)
+        # Check if this fill region touches multiple edge components
+        if np.sum(cv2.dilate(fill_region.astype(np.uint8), kernel) & binary) > np.sum(fill_region) * 2:
+            final_fills[fill_region] = 255
+    
+    unified = cv2.bitwise_or(binary, final_fills)
+    cleaned = remove_small_regions(unified, min_size=min_region_size)
+    region_map = (cleaned > 0).astype(np.uint8)
+    
+    return cleaned, region_map
+"""
 
 def unify_with_distance_transform(binary_image, max_gap_distance=3, min_region_size=50):
     """
@@ -190,9 +268,6 @@ def extract_roi_nonroi(original_image, region_map):
 
 def process_and_unify_borders(edge_map, edge_density, original_image, density_threshold=0.3, 
                             unification_method='hybrid', min_region_size=50, **kwargs):
-    """
-    Updated to support different unification methods with visualization.
-    """
     # Step 1: Get high-density borders
     high_density_mask = edge_density > density_threshold
     intensity_borders = edge_map.copy()
@@ -202,35 +277,57 @@ def process_and_unify_borders(edge_map, edge_density, original_image, density_th
     
     # Step 2: Use selected unification method
     if unification_method == 'morphology':
-        unified_borders, region_map = unify_with_morphology(
-            binary_borders, gap_size=25 ,min_region_size=min_region_size, **kwargs)
-        
-    """
+        unified_borders, region_map = unify_with_morphology(binary_borders, gap_size=25 ,min_region_size=min_region_size, **kwargs)
+
+        # Test different kernels in your main:
+        """kernel_types = ['rect', 'cross', 'ellipse', 'multi_pass']
+
+        for kernel_type in kernel_types:
+            print(f"\n=== Testing {kernel_type} kernel ===")
+            unified_borders, region_map = unify_with_morphology(
+                binary_borders, 
+                gap_size=25, 
+                min_region_size=min_region_size,
+                kernel_type=kernel_type
+            )
+
+            # Extract ROI and non-ROI
+            roi_image, nonroi_image, roi_mask, nonroi_mask = extract_roi_nonroi(original_image, region_map)
+            
+            # Create comprehensive visualization
+            visualize_unification_process(original_image, binary_borders, unified_borders, region_map, roi_mask, unification_method)"""
+                
+
+
+
+
     elif unification_method == 'distance':
         unified_borders, region_map = unify_with_distance_transform(
-            binary_borders, max_gap_distance=25, min_region_size=min_region_size, **kwargs)
+            binary_borders, max_gap_distance=100, min_region_size=min_region_size, **kwargs)
     elif unification_method == 'components':
         unified_borders, region_map = unify_with_connected_components(
             binary_borders, min_region_size=min_region_size, **kwargs)
     elif unification_method == 'hybrid':
         unified_borders, region_map = unify_hybrid_method(
             binary_borders, min_region_size=min_region_size, **kwargs)
-    else:
+    """else:
         # Fallback to original
         unified_borders, region_map = unify_black_pixels_in_white_regions(
-            binary_borders, min_region_size=min_region_size, **kwargs)
-    """
+            binary_borders, min_region_size=min_region_size, **kwargs)"""
     
     # Extract ROI and non-ROI
     roi_image, nonroi_image, roi_mask, nonroi_mask = extract_roi_nonroi(original_image, region_map)
     
     # Create comprehensive visualization
-    visualize_unification_process(original_image, binary_borders, unified_borders, 
-                                region_map, roi_mask, unification_method)
+    visualize_unification_process(original_image, binary_borders, unified_borders, region_map, roi_mask, unification_method)
+    
+    
+    
     
     print(f"Method: {unification_method}, ROI coverage: {np.sum(roi_mask)/roi_mask.size*100:.1f}%")
     
     return unified_borders, region_map, roi_image, nonroi_image, roi_mask, nonroi_mask
+
 
 def visualize_unification_process(original_image, binary_borders, unified_borders, 
                                 region_map, roi_mask, method_name):
@@ -476,7 +573,7 @@ if __name__ == "__main__":
     edge_map = get_edge_map(image_rgb)
     edge_density = compute_local_density(edge_map, kernel_size=3)
 
-    threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") / 5
+    threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") /2.5
     
     window_size = math.floor(factor)
     min_region_size= math.ceil( image_rgb.size / math.pow(10, math.ceil(math.log(image_rgb.size, 10))-3 ) )
@@ -489,6 +586,7 @@ if __name__ == "__main__":
     methods = ['morphology']
 
     for method in methods:
+
         print(f"\n=== Testing {method} method ===")
         unified, regions, roi_image, nonroi_image, roi_mask, nonroi_mask = process_and_unify_borders(
             edge_map, edge_density, image_rgb,
