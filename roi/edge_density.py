@@ -348,45 +348,166 @@ def compare_weighted_kernels(image_rgb, radius=50, density_threshold=0.1):
     plt.tight_layout()
     plt.show()
 
-# Main with weighted kernels
+    #print("=== Comparing Weighted Kernels ===")
+    #compare_weighted_kernels(image_rgb, radius=50, density_threshold=0.1)
+
+
+
+
+
+
+
+def enhance_gradient_magnitude(gradient_magnitude, enhancement_type='power', factor=2.0):
+    """
+    Enhance gradient magnitudes, especially weak ones.
+    
+    Args:
+        gradient_magnitude: Raw gradient magnitude from Sobel
+        enhancement_type: 'power', 'exponential', 'sigmoid', 'contrast'
+        factor: Enhancement strength factor
+    
+    Returns:
+        enhanced_gradient: Enhanced gradient magnitude
+    """
+    if enhancement_type == 'power':
+        # Power law transformation: boosts weak gradients more than strong ones
+        enhanced = gradient_magnitude ** (1/factor)
+        # Renormalize to original range
+        enhanced = (enhanced - enhanced.min()) / (enhanced.max() - enhanced.min()) * gradient_magnitude.max()
+        
+    elif enhancement_type == 'exponential':
+        # Exponential enhancement
+        enhanced = np.exp(gradient_magnitude * factor / gradient_magnitude.max()) - 1
+        enhanced = enhanced / enhanced.max() * gradient_magnitude.max()
+        
+    elif enhancement_type == 'sigmoid':
+        # Sigmoid contrast enhancement
+        normalized = gradient_magnitude / gradient_magnitude.max()
+        enhanced = 1 / (1 + np.exp(-factor * (normalized - 0.5)))
+        enhanced = enhanced * gradient_magnitude.max()
+        
+    elif enhancement_type == 'contrast':
+        # Simple contrast stretching for weak gradients
+        weak_mask = gradient_magnitude < gradient_magnitude.mean()
+        enhanced = gradient_magnitude.copy()
+        enhanced[weak_mask] = enhanced[weak_mask] * factor
+        
+    elif enhancement_type == 'adaptive':
+        # Adaptive enhancement based on local statistics
+        local_mean = cv2.blur(gradient_magnitude, (15, 15))
+        local_std = np.sqrt(cv2.blur(gradient_magnitude**2, (15, 15)) - local_mean**2)
+        
+        # Boost gradients that are above noise level but weak
+        noise_level = local_std.mean() * 0.5
+        weak_but_significant = (gradient_magnitude > noise_level) & (gradient_magnitude < gradient_magnitude.mean())
+        enhanced = gradient_magnitude.copy()
+        enhanced[weak_but_significant] = enhanced[weak_but_significant] * factor
+        
+    else:
+        enhanced = gradient_magnitude
+    
+    return enhanced
+
+def compute_enhanced_gradients(gray, enhancement_type='power', factor=2.0):
+    """
+    Compute Sobel gradients with enhancement.
+    """
+    # Compute raw gradients
+    sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
+    
+    # Enhance gradient magnitudes
+    enhanced_magnitude = enhance_gradient_magnitude(gradient_magnitude, enhancement_type, factor)
+    
+    return enhanced_magnitude, gradient_magnitude
+
+def compute_enhanced_sobel(gray, dx=1, dy=1, ksize=3, scale=1.0, delta=0):
+    """
+    Compute Sobel with adjustable parameters for stronger response.
+    """
+    # You can increase dx, dy values or use scale parameter
+    sobelx = cv2.Sobel(gray, cv2.CV_64F, dx, 0, ksize=ksize, scale=scale, delta=delta)
+    sobely = cv2.Sobel(gray, cv2.CV_64F, 0, dy, ksize=ksize, scale=scale, delta=delta)
+    
+    gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
+    return gradient_magnitude
+
+def multi_scale_sobel(gray, scales=[1.0, 2.0, 3.0]):
+    """
+    Combine Sobel responses from multiple scales.
+    """
+    gradients = []
+    
+    for scale in scales:
+        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3, scale=scale)
+        sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3, scale=scale)
+        grad_mag = np.sqrt(sobelx**2 + sobely**2)
+        gradients.append(grad_mag)
+    
+    # Combine by taking maximum response at each pixel
+    combined = np.max(gradients, axis=0)
+    return combined
+
+
+from clahe import get_enhanced_image
+
 if __name__ == "__main__":
     image_name = 'images/kauai.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    
-    print("=== Comparing Weighted Kernels ===")
-    compare_weighted_kernels(image_rgb, radius=50, density_threshold=0.1)
-    
-    # Get final ROI with best kernel
-    print("\n=== Final ROI with Gaussian Weighting ===")
+    image_rgb=get_enhanced_image(image_rgb)
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
-    sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
-    gradient_normalized = (gradient_magnitude - gradient_magnitude.min()) / (gradient_magnitude.max() - gradient_magnitude.min())
     
-    density_map, kernel = compute_weighted_gradient_density(
-        gradient_normalized, radius=50, kernel_type='gaussian', sigma_ratio=0.3
-    )
+    # Test different enhancement methods
+    enhancement_methods = [
+        ('None', 'none', 1.0),
+        ('Power (weak boost)', 'power', 1.5),
+        #('Power (strong boost)', 'power', 2.5),
+        #('Exponential', 'exponential', 3.0),
+        #('Sigmoid', 'sigmoid', 5.0),
+        #('Adaptive', 'adaptive', 2.0),
+        #('Multi-scale', 'multiscale', 1.0)
+    ]
     
-    roi_mask = identify_roi_from_density(density_map, density_threshold=0.1)
-    final_roi_mask = clean_roi_mask(roi_mask, min_region_size=100)
+    fig, axes = plt.subplots(2, len(enhancement_methods), figsize=(20, 12))
     
-    # Final visualization
-    visualize_roi_detection(image_rgb, gradient_normalized, density_map, final_roi_mask, 50)
+    for col, (name, enh_type, factor) in enumerate(enhancement_methods):
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        if enh_type == 'multiscale': gradient_magnitude = multi_scale_sobel(gray)
+        else: gradient_magnitude, original_magnitude = compute_enhanced_gradients(gray, enh_type, factor)
+        
+        # Normalize
+        gradient_normalized = (gradient_magnitude - gradient_magnitude.min()) / (gradient_magnitude.max() - gradient_magnitude.min())
+        
+        # Compute density and ROI
+        density_map, kernel = compute_weighted_gradient_density(
+            gradient_normalized, radius=10, kernel_type='gaussian', sigma_ratio=0.05
+        )
+        
+        roi_mask = identify_roi_from_density(density_map, density_threshold=0.1)
+        final_roi_mask = clean_roi_mask(roi_mask, min_region_size=10)
+        
+        # Plot gradient comparison
+        axes[0, col].imshow(gradient_normalized, cmap='hot')
+        axes[0, col].set_title(f'{name}\nGradient')
+        axes[0, col].axis('off')
+        
+        # Plot density map
+        """axes[1, col].imshow(density_map, cmap='viridis')
+        axes[1, col].set_title('Density Map')
+        axes[1, col].axis('off')"""
+        
+        # Plot ROI overlay
+        axes[1, col].imshow(image_rgb)
+        overlay = np.zeros_like(image_rgb)
+        overlay[final_roi_mask] = [255, 0, 0]
+        axes[1, col].imshow(overlay, alpha=0.5)
+        roi_coverage = np.sum(final_roi_mask) / final_roi_mask.size * 100
+        axes[1, col].set_title(f'ROI: {roi_coverage:.1f}%')
+        axes[1, col].axis('off')
+        
+        print(f"{name:20}: {roi_coverage:.1f}% ROI coverage")
+    
+    plt.tight_layout()
+    plt.show()

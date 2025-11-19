@@ -379,12 +379,14 @@ def edge_preserving_preprocess(image):
     return final
 
 
+from clahe import get_enhanced_image
 if __name__ == "__main__":
-    image_name = 'images/cerchio.png'
+    image_name = 'images/kauai.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    mod_image=edge_preserving_preprocess(image_rgb)
-    test_functions(mod_image, visualization=True)
+    image_rgb=get_enhanced_image(image_rgb)
+    #mod_image=edge_preserving_preprocess(image_rgb)
+    test_functions(image_rgb, visualization=True)
 
 
 

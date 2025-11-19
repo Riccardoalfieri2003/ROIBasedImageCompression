@@ -557,11 +557,12 @@ def reconstruct_larger_regions(eroded_image, original_image, kernel):
 
 
 from edges import get_edge_map
-
+from clahe import get_enhanced_image
 if __name__ == "__main__":
-    image_name = 'images/Lenna.webp'
+    image_name = 'images/kauai.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image_rgb=get_enhanced_image(image_rgb, shadow_threshold=115)
 
     print(f"Size: {image_rgb.size}")
     factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
