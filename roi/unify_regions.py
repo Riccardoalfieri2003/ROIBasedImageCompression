@@ -562,7 +562,7 @@ if __name__ == "__main__":
     image_name = 'images/kauai.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image_rgb=get_enhanced_image(image_rgb, shadow_threshold=115)
+    image_rgb=get_enhanced_image(image_rgb, shadow_threshold=100)
 
     print(f"Size: {image_rgb.size}")
     factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
@@ -573,6 +573,12 @@ if __name__ == "__main__":
     # Compare with your ROI detection
     edge_map = get_edge_map(image_rgb)
     edge_density = compute_local_density(edge_map, kernel_size=3)
+
+    # Method 1: Simplest
+    plt.imshow(edge_density)
+    plt.show()
+
+
 
     threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") /2.5
     

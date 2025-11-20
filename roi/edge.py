@@ -277,6 +277,9 @@ def unify_black_pixels_in_white_regions(binary_image, window_size=30, white_thre
     
     return cleaned_image, region_map
 
+
+
+
 """
 def remove_small_regions(binary_image, min_size=50):
     # Find all connected components
@@ -802,8 +805,7 @@ def visualize_roi_nonroi_comparison(original_image, roi_image, nonroi_image, reg
 
 
 # Updated process function that returns ROI and non-ROI
-def process_and_unify_borders(edge_map, edge_density, original_image, density_threshold=0.3, 
-                            unification_window=30, unification_threshold=0.5, min_region_size=50):
+def process_and_unify_borders(edge_map, edge_density, original_image, density_threshold=0.3, unification_window=30, unification_threshold=0.5, min_region_size=50):
     """
     Complete pipeline: filter edges by density, then unify regions, remove small regions.
     Returns ROI and non-ROI separately.
@@ -1321,11 +1323,13 @@ if __name__ == "__main__":
 
 
 from edges import get_edge_map
+from clahe import get_enhanced_image
 
 if __name__ == "__main__":
-    image_name = 'images/waikiki.jpg'
+    image_name = 'images/kauai.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image_rgb=get_enhanced_image(image_rgb)
 
     print(f"Size: {image_rgb.size}")
     factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
@@ -1365,7 +1369,7 @@ if __name__ == "__main__":
     """
 
 
-    threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") / 5
+    threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") / 10
     
     window_size = math.floor(factor)
     min_region_size= math.ceil( image_rgb.size / math.pow(10, math.ceil(math.log(image_rgb.size, 10))-3 ) )
