@@ -86,26 +86,31 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
     binary_borders = (intensity_borders > 0).astype(np.uint8) * 255
     
     binary_thin_bordersless=remove_thin_structures(binary_borders, density_threshold=0.15, thinness_threshold=0.3, window_size=25, min_region_size=10)
+    noiseless_binary_borders=remove_small_noise_regions(binary_thin_bordersless, min_size=75)
+    #noiseless_binary_borders=remove_small_noise_regions(binary_borders, min_size=75)
 
-    plt.imshow(binary_thin_bordersless)
+    # Skeleton-based connection
+    connected = connect_nearby_pixels(
+        noiseless_binary_borders,
+        connection_distance=5,
+        method='skeleton',
+        min_region_size=5
+    )
+
+    plt.imshow(connected)
+    plt.title("connected")
     plt.show()
 
     
 
-    noiseless_binary_borders=remove_small_noise_regions(binary_thin_bordersless, min_size=75)
-    #noiseless_binary_borders=remove_small_noise_regions(noiseless_binary_borders, min_size=1)
-
-    plt.imshow(noiseless_binary_borders)
-    plt.show()
-
-
     # Step 2: Use the new directional region unification
     unified_borders, region_map = directional_region_unification(
-        noiseless_binary_borders,  # This was the missing variable - using binary_borders instead of binary_image
+        connected,  # This was the missing variable - using binary_borders instead of binary_image
         border_sensitivity=border_sensitivity,
         min_region_size=min_region_size,
         max_gap_to_bridge=max_gap_to_bridge
     )
+
         
     # Extract ROI and non-ROI
     roi_image, nonroi_image, roi_mask, nonroi_mask = extract_roi_nonroi(original_image, region_map)
@@ -266,8 +271,7 @@ def directional_region_unification(binary_image,
 
     
     
-    # Step 1: Initial noise removal
-    #denoised = remove_small_noise_regions(binary_image, min_size=min_region_size//10)
+    # Step 1: Initial noise removal, already done
     #denoised = remove_small_noise_regions(binary_image, min_size=min_region_size)
 
     denoised=binary_image
@@ -275,17 +279,24 @@ def directional_region_unification(binary_image,
     # Step 2: Detect strong borders using gradient
     border_mask = detect_meaningful_borders(denoised, sensitivity=0.5)
 
-    plt.imshow(border_mask)
+    # Step 3: Protect borders from being unified
+    protected_image = protect_border_regions(denoised, border_mask, kernel_size=15)
+
+    plt.imshow(protected_image)
+    plt.title("protected_image")
     plt.show()
     
-    # Step 3: Protect borders from being unified
-    protected_image = protect_border_regions(denoised, border_mask)
-    
     # Step 4: Bridge small gaps within regions (not across borders)
-    bridged_image = bridge_small_gaps(protected_image, border_mask, max_gap=5)
-    #bridged_image = bridge_small_gaps(bridged_image, border_mask, max_gap=20)
+    #bridged_image = bridge_small_gaps(protected_image, border_mask, max_gap=25, density_threshold=0.05, window_size=25)
+    bridged_image = bridge_small_gaps(protected_image, max_gap=25, density_threshold=0.2, local_window=15, regional_window=25, method="relaxed")
 
     plt.imshow(bridged_image)
+    plt.title("bridged_image")
+    plt.show()
+
+    closed_regions=fill_closed_regions(bridged_image, min_hole_size=10, max_hole_size=1000, connectivity=4)
+    plt.imshow(closed_regions)
+    plt.title("closed_regions")
     plt.show()
 
     #bridged_image=binary_image
@@ -315,21 +326,21 @@ def directional_region_unification(binary_image,
     # cleaned_image = remove_small_regions(cleaned_image, min_size=5, remove_thin_lines=True, kernel_size=30)
 
     # USE THIS:
-    cleaned_image = contextual_region_cleaning(
+    """cleaned_image = contextual_region_cleaning(
         bridged_image,
         thin_kernel_size=3,           # For thin structure removal (3-7)
         min_relative_size=0.01,       # 2% of parent region size
         absolute_min_size=100,         # Absolute minimum size
         connectivity=8
-    )
+    )"""
 
     #plt.imshow(cleaned_image)
     #plt.show()
     
     # Create region map
-    region_map = (cleaned_image > 0).astype(np.uint8)
+    region_map = (closed_regions > 0).astype(np.uint8)
     
-    return cleaned_image, region_map
+    return closed_regions, region_map
 
 def detect_meaningful_borders(binary_image, sensitivity=0.7):
     """
@@ -406,52 +417,497 @@ def protect_border_regions(binary_image, border_mask, kernel_size=18):
     
     return protected_image
 
-def bridge_small_gaps(binary_image, border_mask, max_gap=5):
+
+
+
+
+"""def bridge_small_gaps(binary_image, border_mask, max_gap=3, density_threshold=0.3, window_size=15):
+
+    bridged_image = binary_image.copy()
+    
+    # Calculate local density
+    density_map = calculate_local_density(binary_image, window_size)
+    
+    # Create safe working area (not near borders AND in dense regions)
+    safe_area = ~border_mask & (density_map > density_threshold)
+    
+    if not np.any(safe_area):
+        return bridged_image
+    
+    # Find gaps (black pixels) in safe areas that are between white regions
+    gap_mask = find_internal_gaps(binary_image, safe_area, max_gap)
+
+    plt.imshow(gap_mask)
+    plt.title("gap_mask")
+    plt.show()
+    
+    # Bridge only the identified gaps
+    bridged_image[gap_mask] = 255
+    
+    print(f"Bridged {np.sum(gap_mask)} gap pixels in dense regions")
+    
+    return bridged_image
+"""
+
+"""def bridge_small_gaps(binary_image, max_gap=3, density_threshold=0.1, 
+                          window_size=25, method='simple'):
+
+    bridged_image = binary_image.copy()
+    
+    # Calculate local density to find good bridging areas
+    density_map = calculate_local_density(binary_image, window_size)
+    
+    # Create safe area based on density only (no border mask)
+    safe_area = density_map > density_threshold
+    
+    # Debug info
+    safe_pixels = np.sum(safe_area)
+    black_in_safe = np.sum((binary_image == 0) & safe_area)
+    print(f"Safe area: {safe_pixels} pixels ({safe_pixels/binary_image.size*100:.1f}%)")
+    print(f"Black pixels in safe area: {black_in_safe}")
+    
+    if black_in_safe == 0:
+        print("No black pixels in safe area - returning original")
+        return bridged_image
+    
+    # Choose gap finding method
+    if method == 'simple':
+        gap_mask = find_gaps_simple_auto(binary_image, safe_area, max_gap)
+    elif method == 'flexible':
+        gap_mask = find_gaps_flexible_auto(binary_image, safe_area, max_gap)
+    else:  # 'morphological'
+        gap_mask = find_gaps_morphological_auto(binary_image, safe_area, max_gap)
+    
+    # Bridge the gaps
+    bridged_image[gap_mask] = 255
+    
+    print(f"Bridged {np.sum(gap_mask)} gap pixels")
+    return bridged_image
+"""
+
+
+def bridge_small_gaps(binary_image, max_gap=3, density_threshold=0.3, 
+                                   local_window=5, regional_window=25,
+                                   method='density_aware'):
     """
-    Bridge small gaps within regions while respecting borders.
+    2D directional gap bridging that considers both local surroundings and regional density.
     
     Args:
         binary_image: Binary image (0 and 255)
-        border_mask: Mask of protected border regions
         max_gap: Maximum gap size to bridge
+        density_threshold: Minimum regional density to consider bridging
+        local_window: Window size for local directionality check
+        regional_window: Window size for regional density calculation
+        method: 'density_aware', 'strict', or 'relaxed'
     
     Returns:
-        bridged_image: Image with small gaps bridged
+        bridged_image: Image with internal gaps bridged
     """
     bridged_image = binary_image.copy()
     
-    # Create safe working area (not near borders)
-    """safe_area = ~border_mask
+    # Calculate regional density (larger context)
+    regional_density = calculate_local_density(binary_image, regional_window)
     
-    # Only bridge gaps in safe areas
-    if np.any(safe_area):
-        # Use morphological closing to bridge small gaps, but only in safe areas
-        #kernel_size = max(1, min(max_gap, 5))
-        kernel_size = max_gap
-        kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        
-        # Apply closing only to safe areas
-        safe_region = bridged_image.copy()
-        safe_region[~safe_area] = 0  # Mask out border areas
-        
-        closed_safe = cv2.morphologyEx(safe_region, cv2.MORPH_CLOSE, kernel)
-        
-        # Combine results: use closed version in safe areas, original near borders
-        bridged_image[safe_area] = closed_safe[safe_area]"""
+    # Find candidate pixels: black pixels in dense regions
+    candidates = (binary_image == 0) & (regional_density > density_threshold)
     
-    kernel_size = max_gap
+    if not np.any(candidates):
+        return bridged_image
+    
+    # Find internal gaps based on method
+    if method == 'strict':
+        internal_gaps = find_internal_gaps_strict_2d(binary_image, candidates, max_gap, local_window)
+    elif method == 'relaxed':
+        internal_gaps = find_internal_gaps_relaxed_2d(binary_image, candidates, max_gap, local_window)
+    else:  # 'density_aware'
+        internal_gaps = find_internal_gaps_density_aware_2d(binary_image, candidates, max_gap, local_window)
+    
+    # Bridge the gaps
+    bridged_image[internal_gaps] = 255
+    
+    print(f"Bridged {np.sum(internal_gaps)} internal gap pixels")
+    return bridged_image
+
+def find_internal_gaps_strict_2d(binary_image, candidates, max_gap, local_window):
+    """
+    Strict: pixel must be completely surrounded by white in local neighborhood.
+    """
+    internal_gaps = np.zeros_like(binary_image, dtype=bool)
+    height, width = binary_image.shape
+    
+    for y in range(height):
+        for x in range(width):
+            if candidates[y, x]:
+                if is_locally_surrounded_2d(binary_image, x, y, local_window, max_gap):
+                    internal_gaps[y, x] = True
+    
+    return internal_gaps
+
+def find_internal_gaps_relaxed_2d(binary_image, candidates, max_gap, local_window):
+    """
+    Relaxed: pixel must have white pixels in opposite directions within local area.
+    """
+    internal_gaps = np.zeros_like(binary_image, dtype=bool)
+    height, width = binary_image.shape
+    
+    for y in range(height):
+        for x in range(width):
+            if candidates[y, x]:
+                if has_white_in_opposite_directions_2d(binary_image, x, y, max_gap, local_window):
+                    internal_gaps[y, x] = True
+    
+    return internal_gaps
+
+def find_internal_gaps_density_aware_2d(binary_image, candidates, max_gap, local_window):
+    """
+    Density-aware: combine local connectivity with density gradient.
+    """
+    internal_gaps = np.zeros_like(binary_image, dtype=bool)
+    height, width = binary_image.shape
+    
+    # Calculate local density for more precise analysis
+    local_density = calculate_local_density(binary_image, local_window)
+    
+    for y in range(height):
+        for x in range(width):
+            if candidates[y, x]:
+                # Check if this is an internal gap using multiple criteria
+                if is_internal_gap_2d(binary_image, local_density, x, y, max_gap, local_window):
+                    internal_gaps[y, x] = True
+    
+    return internal_gaps
+
+def is_locally_surrounded_2d(binary_image, x, y, window_size, max_gap):
+    """
+    Check if pixel is surrounded by white pixels in local neighborhood.
+    """
+    height, width = binary_image.shape
+    half_window = window_size // 2
+    
+    # Define local neighborhood
+    y_start = max(0, y - half_window)
+    y_end = min(height, y + half_window + 1)
+    x_start = max(0, x - half_window)
+    x_end = min(width, x + half_window + 1)
+    
+    neighborhood = binary_image[y_start:y_end, x_start:x_end]
+    
+    # Count white pixels in neighborhood (excluding center)
+    white_count = np.sum(neighborhood > 0)
+    total_pixels = neighborhood.size - 1  # exclude center
+    
+    # Consider surrounded if most pixels in neighborhood are white
+    return white_count / total_pixels > 0.7  # 70% white in local area
+
+def has_white_in_opposite_directions_2d(binary_image, x, y, max_gap, local_window):
+    """
+    Check for white pixels in opposite directions within local constraints.
+    """
+    height, width = binary_image.shape
+    
+    # Define search patterns (pairs of opposite directions)
+    direction_pairs = [
+        [(-1, 0), (1, 0)],   # left-right
+        [(0, -1), (0, 1)],   # up-down
+        [(-1, -1), (1, 1)],  # diagonal 
+        [(-1, 1), (1, -1)]   # anti-diagonal
+    ]
+    
+    for pair in direction_pairs:
+        found_both = True
+        for dx, dy in pair:
+            found_white = False
+            for dist in range(1, max_gap + 1):
+                nx, ny = x + dx * dist, y + dy * dist
+                # Check if within local window and image bounds
+                if (abs(nx - x) <= local_window and abs(ny - y) <= local_window and
+                    0 <= nx < width and 0 <= ny < height):
+                    if binary_image[ny, nx] > 0:
+                        found_white = True
+                        break
+            if not found_white:
+                found_both = False
+                break
+        
+        if found_both:
+            return True
+    
+    return False
+
+def is_internal_gap_2d(binary_image, local_density, x, y, max_gap, local_window):
+    """
+    Comprehensive check for internal gaps using multiple criteria.
+    """
+    height, width = binary_image.shape
+    
+    # Criterion 1: Local density should be high around this pixel
+    half_window = local_window // 2
+    y_start = max(0, y - half_window)
+    y_end = min(height, y + half_window + 1)
+    x_start = max(0, x - half_window)
+    x_end = min(width, x + half_window + 1)
+    
+    local_density_around = np.mean(local_density[y_start:y_end, x_start:x_end])
+    if local_density_around < 0.4:  # Not dense enough locally
+        return False
+    
+    # Criterion 2: Should have white pixels in multiple directions
+    directions_with_white = 0
+    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        found_white = False
+        for dist in range(1, max_gap + 1):
+            nx, ny = x + dx * dist, y + dy * dist
+            if 0 <= nx < width and 0 <= ny < height:
+                if binary_image[ny, nx] > 0:
+                    found_white = True
+                    break
+        if found_white:
+            directions_with_white += 1
+    
+    # Criterion 3: Should not be on an edge (gradient check)
+    is_on_edge = is_pixel_on_edge(binary_image, x, y, local_window)
+    
+    # Combine criteria
+    return (directions_with_white >= 3) and not is_on_edge
+
+def is_pixel_on_edge(binary_image, x, y, window_size):
+    """
+    Check if pixel is on an edge between regions using gradient.
+    """
+    height, width = binary_image.shape
+    half_window = window_size // 2
+    
+    y_start = max(0, y - half_window)
+    y_end = min(height, y + half_window + 1)
+    x_start = max(0, x - half_window)
+    x_end = min(width, x + half_window + 1)
+    
+    neighborhood = binary_image[y_start:y_end, x_start:x_end].astype(np.float32)
+    
+    if neighborhood.size < 4:  # Too small for gradient
+        return False
+    
+    # Calculate gradient magnitude
+    grad_x = cv2.Sobel(neighborhood, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(neighborhood, cv2.CV_32F, 0, 1, ksize=3)
+    grad_mag = np.sqrt(grad_x**2 + grad_y**2)
+    
+    # High gradient indicates edge
+    return np.max(grad_mag) > 100
+
+
+
+def find_gaps_simple_auto(binary_image, safe_area, max_gap=3):
+    """
+    Simple gap detection without border constraints.
+    """
+    gaps_in_safe = (binary_image == 0) & safe_area
+    
+    if not np.any(gaps_in_safe):
+        return np.zeros_like(binary_image, dtype=bool)
+    
+    # Use morphological closing
+    kernel_size = max(3, max_gap * 2 - 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    closed_image = cv2.morphologyEx(binary_image, cv2.MORPH_CLOSE, kernel)
+    
+    # Find gaps that get filled
+    filled_gaps = (closed_image > 0) & (binary_image == 0)
+    
+    # Only keep gaps in safe areas
+    internal_gaps = filled_gaps & gaps_in_safe
+    
+    return internal_gaps
+
+def find_gaps_flexible_auto(binary_image, safe_area, max_gap=3, min_directions=2):
+    """
+    Flexible gap detection based on white pixel directions.
+    """
+    gaps_in_safe = (binary_image == 0) & safe_area
+    
+    if not np.any(gaps_in_safe):
+        return np.zeros_like(binary_image, dtype=bool)
+    
+    internal_gaps = np.zeros_like(binary_image, dtype=bool)
+    height, width = binary_image.shape
+    
+    for y in range(height):
+        for x in range(width):
+            if gaps_in_safe[y, x]:
+                directions = count_white_directions(binary_image, x, y, max_gap)
+                if directions >= min_directions:
+                    internal_gaps[y, x] = True
+    
+    return internal_gaps
+
+def find_gaps_morphological_auto(binary_image, safe_area, max_gap=3):
+    """
+    Morphological gap detection with distance transform.
+    """
+    gaps_in_safe = (binary_image == 0) & safe_area
+    
+    if not np.any(gaps_in_safe):
+        return np.zeros_like(binary_image, dtype=bool)
+    
+    # Calculate distance to nearest white pixel
+    dist_transform = cv2.distanceTransform((binary_image == 0).astype(np.uint8), 
+                                         cv2.DIST_L2, 5)
+    
+    # Gaps that are close to white pixels
+    close_gaps = (dist_transform > 0) & (dist_transform <= max_gap)
+    
+    # Only gaps in safe areas
+    internal_gaps = close_gaps & gaps_in_safe
+    
+    return internal_gaps
+
+def count_white_directions(binary_image, x, y, max_gap):
+    """
+    Count how many directions have white pixels within max_gap.
+    """
+    height, width = binary_image.shape
+    directions = 0
+    
+    # Check 4 main directions
+    directions_to_check = [
+        (-1, 0), (1, 0), (0, -1), (0, 1),  # left, right, up, down
+        (-1, -1), (-1, 1), (1, -1), (1, 1)  # diagonals
+    ]
+    
+    for dx, dy in directions_to_check:
+        found_white = False
+        for dist in range(1, max_gap + 1):
+            nx, ny = x + dx * dist, y + dy * dist
+            if 0 <= nx < width and 0 <= ny < height:
+                if binary_image[ny, nx] > 0:
+                    found_white = True
+                    break
+        if found_white:
+            directions += 1
+    
+    return directions
+
+
+def find_internal_gaps(binary_image, safe_area, max_gap=3):
+    """
+    Find gaps that are between white regions in safe areas.
+    """
+    # Create a mask of gaps (black pixels) in safe areas
+    gaps_in_safe = (binary_image == 0) & safe_area
+    #gaps_in_safe=safe_area
+
+    plt.imshow(safe_area)
+    plt.title("safe_area")
+    plt.show()
+    
+    if not np.any(gaps_in_safe):
+        return np.zeros_like(binary_image, dtype=bool)
+    
+    # Use morphological closing to find gaps that would be filled
+    kernel_size = max_gap * 2 + 1  # Ensure odd number
     kernel = np.ones((kernel_size, kernel_size), np.uint8)
     
-    # Apply closing only to safe areas
-    safe_region = bridged_image.copy()
-    #safe_region[~safe_area] = 0  # Mask out border areas
-    
-    closed_safe = cv2.morphologyEx(safe_region, cv2.MORPH_GRADIENT, kernel)
-    
-    # Combine results: use closed version in safe areas, original near borders
-    #bridged_image[safe_area] = closed_safe[safe_area]
+    # Apply closing to see what gets connected
+    closed_image = cv2.morphologyEx(binary_image, cv2.MORPH_CLOSE, kernel)
 
-    return closed_safe
+    plt.imshow(closed_image)
+    plt.title("closed_image")
+    plt.show()
+
+    # Find gaps that get filled by closing
+    filled_gaps = (closed_image > 0) & (binary_image == 0)
+
+    plt.imshow(filled_gaps)
+    plt.title("filled_gaps")
+    plt.show()
+    
+    # Only keep gaps that are in safe areas AND have white neighbors
+    internal_gaps = filled_gaps & gaps_in_safe #& has_white_neighbors(binary_image, max_gap)
+
+    plt.imshow(internal_gaps)
+    plt.title("internal_gaps")
+    plt.show()
+    
+    print(f"Found {np.sum(internal_gaps)} internal gaps to bridge")
+    return internal_gaps
+
+def has_white_neighbors(binary_image, max_gap):
+    """
+    Check if black pixels have white pixels within max_gap distance.
+    Much more flexible than the surrounded check.
+    """
+    # Create kernel for dilation
+    kernel_size = max_gap * 2 + 1
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    
+    # Dilate white regions
+    dilated_white = cv2.dilate(binary_image, kernel, iterations=1)
+    
+    # Black pixels that are near white pixels
+    near_white = (dilated_white > 0) & (binary_image == 0)
+    
+    return near_white
+
+def calculate_local_density(binary_image, window_size=15):
+    """
+    Calculate local density of white pixels.
+    """
+    binary_float = (binary_image > 0).astype(np.float32)
+    kernel = np.ones((window_size, window_size), dtype=np.float32)
+    kernel /= np.sum(kernel)
+    density_map = cv2.filter2D(binary_float, -1, kernel)
+    return density_map
+
+
+
+
+
+
+
+def fill_closed_regions(binary_image, min_hole_size=10, max_hole_size=1000, connectivity=4):
+    """
+    Fill holes in closed regions while respecting size constraints.
+    
+    Args:
+        binary_image: Binary image (0 and 255)
+        min_hole_size: Minimum hole size to fill (avoid noise)
+        max_hole_size: Maximum hole size to fill (avoid filling large backgrounds)
+        connectivity: 4 or 8 connectivity
+    
+    Returns:
+        filled_image: Image with closed regions filled
+    """
+    # Ensure binary image is 0-255 uint8
+    if binary_image.max() <= 1:
+        binary_image = (binary_image * 255).astype(np.uint8)
+    
+    # Invert to find holes (black regions surrounded by white)
+    inverted = 255 - binary_image
+    
+    # Find connected components in the inverted image
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(inverted, connectivity=connectivity)
+    
+    # Create mask of holes to fill
+    holes_to_fill = np.zeros_like(binary_image, dtype=np.uint8)
+    
+    for i in range(1, num_labels):  # Skip background (index 0)
+        hole_area = stats[i, cv2.CC_STAT_AREA]
+        
+        # Only fill holes within size constraints
+        if min_hole_size <= hole_area <= max_hole_size:
+            holes_to_fill[labels == i] = 255
+    
+    # Combine original with filled holes
+    filled_image = cv2.bitwise_or(binary_image, holes_to_fill)
+    
+    print(f"Filled {np.sum(holes_to_fill > 0)} pixels in {num_labels-1} holes")
+    return filled_image
+
+
+
+
+
+
 
 def remove_small_noise_regions(binary_image, min_size=5):
     """
@@ -530,12 +986,163 @@ def remove_small_regions(binary_image, min_size=10, remove_thin_lines=False, ker
     return cleaned_image
 
 
+def connect_nearby_pixels(binary_image, connection_distance=3, method='dilation', min_region_size=5):
+    """
+    Connect nearby pixels by filling gaps between them.
+    
+    Args:
+        binary_image: Binary image (0 and 255)
+        connection_distance: Maximum distance to connect pixels (kernel size)
+        method: 'dilation', 'voronoi', 'skeleton', or 'region_growing'
+        min_region_size: Minimum region size to consider for connection
+    
+    Returns:
+        connected_image: Image with nearby pixels connected
+    """
+    if binary_image.max() <= 1:
+        binary_image = (binary_image * 255).astype(np.uint8)
+    
+    if method == 'dilation':
+        return connect_by_dilation(binary_image, connection_distance, min_region_size)
+    elif method == 'voronoi':
+        return connect_by_voronoi(binary_image, connection_distance, min_region_size)
+    elif method == 'skeleton':
+        return connect_by_skeleton(binary_image, connection_distance, min_region_size)
+    elif method == 'region_growing':
+        return connect_by_region_growing(binary_image, connection_distance, min_region_size)
+    else:
+        return connect_by_dilation(binary_image, connection_distance, min_region_size)
+
+def connect_by_dilation(binary_image, connection_distance, min_region_size):
+    """
+    Connect pixels using morphological dilation.
+    Simple and effective for most cases.
+    """
+    # Remove very small regions first
+    cleaned = remove_small_regions(binary_image, min_size=min_region_size)
+    
+    # Create kernel based on connection distance
+    kernel_size = connection_distance * 2 + 1  # Ensure odd number
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    
+    # Dilate to connect nearby regions
+    dilated = cv2.dilate(cleaned, kernel, iterations=1)
+    
+    # Erode back to original scale but with connections
+    connected = cv2.erode(dilated, kernel, iterations=1)
+    
+    return connected
 
 
+def connect_by_voronoi(binary_image, connection_distance, min_region_size):
+    """
+    Connect pixels using Voronoi diagram - creates natural-looking connections.
+    """
+    from scipy.spatial import Voronoi
+    from scipy.ndimage import distance_transform_edt
+    
+    # Remove small regions
+    cleaned = remove_small_regions(binary_image, min_size=min_region_size)
+    
+    # Get coordinates of white pixels
+    y_coords, x_coords = np.where(cleaned > 0)
+    
+    if len(x_coords) == 0:
+        return cleaned
+    
+    # Create Voronoi diagram
+    points = np.column_stack((x_coords, y_coords))
+    vor = Voronoi(points)
+    
+    # Create output image
+    connected = np.zeros_like(cleaned)
+    
+    # Fill Voronoi regions that are close to multiple points
+    for i, region in enumerate(vor.regions):
+        if not region or -1 in region:  # Invalid region
+            continue
+        
+        # Get polygon vertices
+        polygon = vor.vertices[region]
+        
+        # Check if polygon is close to multiple points
+        if is_polygon_connecting(polygon, points, connection_distance):
+            # Convert polygon to integer coordinates and fill
+            polygon_int = polygon.astype(np.int32)
+            cv2.fillPoly(connected, [polygon_int], 255)
+    
+    return connected
 
+def is_polygon_connecting(polygon, points, max_distance):
+    """
+    Check if a Voronoi polygon connects multiple points within max_distance.
+    """
+    if len(polygon) == 0:
+        return False
+    
+    # Find points close to this polygon
+    polygon_center = np.mean(polygon, axis=0)
+    distances = np.linalg.norm(points - polygon_center, axis=1)
+    
+    close_points = points[distances <= max_distance * 2]
+    
+    return len(close_points) >= 2  # Connects at least 2 points
 
+def connect_by_skeleton(binary_image, connection_distance, min_region_size):
+    """
+    Connect pixels using skeletonization and distance transform.
+    """
+    from skimage import morphology
+    
+    # Remove small regions
+    cleaned = remove_small_regions(binary_image, min_size=min_region_size)
+    
+    # Calculate distance transform
+    dist_transform = cv2.distanceTransform(255 - cleaned, cv2.DIST_L2, 5)
+    
+    # Create skeleton of the distance transform
+    skeleton = morphology.skeletonize(dist_transform <= connection_distance)
+    
+    # Combine original with skeleton
+    connected = np.maximum(cleaned, skeleton.astype(np.uint8) * 255)
+    
+    return connected
 
+def connect_by_region_growing(binary_image, connection_distance, min_region_size):
+    """
+    Connect pixels using region growing algorithm.
+    """
+    # Remove small regions
+    cleaned = remove_small_regions(binary_image, min_size=min_region_size)
+    
+    # Label connected components
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(cleaned, connectivity=8)
+    
+    # Create distance map for each region
+    connected = cleaned.copy()
+    
+    for region_id in range(1, num_labels):
+        region_mask = (labels == region_id)
+        
+        # Grow region up to connection_distance
+        grown_region = grow_region(region_mask, connection_distance)
+        
+        # Add grown region to result
+        connected = np.maximum(connected, grown_region)
+    
+    return connected
 
+def grow_region(region_mask, growth_distance):
+    """
+    Grow a region by specified distance.
+    """
+    kernel_size = growth_distance * 2 + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    
+    # Dilate the region
+    grown = cv2.dilate(region_mask.astype(np.uint8), kernel, iterations=1)
+    
+    return grown * 255
 
 
 
@@ -1017,10 +1624,10 @@ def apply_contextual_cleaning(binary_image, labels, stats, hierarchy,
 
 
 if __name__ == "__main__":
-    image_name = 'images/kauai.jpg'
+    image_name = 'images/Lenna.webp'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image_rgb=get_enhanced_image(image_rgb, shadow_threshold=100)
+    #image_rgb=get_enhanced_image(image_rgb, shadow_threshold=100)
 
     print(f"Size: {image_rgb.size}")
     factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
