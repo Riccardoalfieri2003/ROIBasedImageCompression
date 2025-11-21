@@ -85,9 +85,23 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
     # Convert to binary (0 and 255)
     binary_borders = (intensity_borders > 0).astype(np.uint8) * 255
     
+    binary_thin_bordersless=remove_thin_structures(binary_borders, density_threshold=0.15, thinness_threshold=0.3, window_size=25, min_region_size=10)
+
+    plt.imshow(binary_thin_bordersless)
+    plt.show()
+
+    
+
+    noiseless_binary_borders=remove_small_noise_regions(binary_thin_bordersless, min_size=75)
+    #noiseless_binary_borders=remove_small_noise_regions(noiseless_binary_borders, min_size=1)
+
+    plt.imshow(noiseless_binary_borders)
+    plt.show()
+
+
     # Step 2: Use the new directional region unification
     unified_borders, region_map = directional_region_unification(
-        binary_borders,  # This was the missing variable - using binary_borders instead of binary_image
+        noiseless_binary_borders,  # This was the missing variable - using binary_borders instead of binary_image
         border_sensitivity=border_sensitivity,
         min_region_size=min_region_size,
         max_gap_to_bridge=max_gap_to_bridge
@@ -259,17 +273,20 @@ def directional_region_unification(binary_image,
     denoised=binary_image
     
     # Step 2: Detect strong borders using gradient
-    border_mask = detect_meaningful_borders(denoised, sensitivity=0.7)
+    border_mask = detect_meaningful_borders(denoised, sensitivity=0.5)
 
-    #plt.imshow(border_mask)
-    #plt.show()
+    plt.imshow(border_mask)
+    plt.show()
     
     # Step 3: Protect borders from being unified
     protected_image = protect_border_regions(denoised, border_mask)
     
     # Step 4: Bridge small gaps within regions (not across borders)
-    bridged_image = bridge_small_gaps(protected_image, border_mask, max_gap=10)
+    bridged_image = bridge_small_gaps(protected_image, border_mask, max_gap=5)
     #bridged_image = bridge_small_gaps(bridged_image, border_mask, max_gap=20)
+
+    plt.imshow(bridged_image)
+    plt.show()
 
     #bridged_image=binary_image
    
@@ -277,8 +294,6 @@ def directional_region_unification(binary_image,
     #cleaned_image = remove_small_regions(bridged_image, min_size=min_region_size/10, kernel_size=1)
     #cleaned_image=bridged_image
 
-    plt.imshow(bridged_image)
-    plt.show()
 
     """cleaned_image = remove_thin_structures(
         bridged_image, 
@@ -302,14 +317,14 @@ def directional_region_unification(binary_image,
     # USE THIS:
     cleaned_image = contextual_region_cleaning(
         bridged_image,
-        thin_kernel_size=30,           # For thin structure removal (3-7)
-        min_relative_size=0.5,       # 2% of parent region size
-        absolute_min_size=20,         # Absolute minimum size
+        thin_kernel_size=3,           # For thin structure removal (3-7)
+        min_relative_size=0.01,       # 2% of parent region size
+        absolute_min_size=100,         # Absolute minimum size
         connectivity=8
     )
 
-    plt.imshow(cleaned_image)
-    plt.show()
+    #plt.imshow(cleaned_image)
+    #plt.show()
     
     # Create region map
     region_map = (cleaned_image > 0).astype(np.uint8)
@@ -431,7 +446,7 @@ def bridge_small_gaps(binary_image, border_mask, max_gap=5):
     safe_region = bridged_image.copy()
     #safe_region[~safe_area] = 0  # Mask out border areas
     
-    closed_safe = cv2.morphologyEx(safe_region, cv2.MORPH_CLOSE, kernel)
+    closed_safe = cv2.morphologyEx(safe_region, cv2.MORPH_GRADIENT, kernel)
     
     # Combine results: use closed version in safe areas, original near borders
     #bridged_image[safe_area] = closed_safe[safe_area]
@@ -529,21 +544,8 @@ def remove_small_regions(binary_image, min_size=10, remove_thin_lines=False, ker
 
 
 
-
+"""
 def remove_thin_structures(binary_image, kernel_size=2, method='erosion', density_threshold=0.3, window_size=15):
-    """
-    Remove thin structures only in low-density regions.
-    
-    Args:
-        binary_image: Binary image (0 and 255)
-        kernel_size: Size of kernel (1-3)
-        method: 'erosion', 'opening', or 'skeleton'
-        density_threshold: Minimum local density to preserve thin structures (0-1)
-        window_size: Size of window for density calculation
-    
-    Returns:
-        cleaned_image: Image without thin structures in sparse regions
-    """
     if np.sum(binary_image > 0) == 0:
         return binary_image
     
@@ -566,16 +568,7 @@ def remove_thin_structures(binary_image, kernel_size=2, method='erosion', densit
     return cleaned_image
 
 def calculate_local_density(binary_image, window_size=15):
-    """
-    Calculate local density of white pixels.
-    
-    Args:
-        binary_image: Binary image (0 and 255)
-        window_size: Size of the averaging window
-    
-    Returns:
-        density_map: Local density values between 0 and 1
-    """
+
     # Convert to float for processing
     binary_float = (binary_image > 0).astype(np.float32)
     
@@ -589,17 +582,6 @@ def calculate_local_density(binary_image, window_size=15):
     return density_map
 
 def identify_thin_structures(binary_image, method='erosion', kernel_size=2):
-    """
-    Identify thin structures in the image.
-    
-    Args:
-        binary_image: Binary image (0 and 255)
-        method: Method to identify thin structures
-        kernel_size: Kernel size for morphological operations
-    
-    Returns:
-        thin_mask: Mask of thin structures to potentially remove
-    """
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
     
     if method == 'erosion':
@@ -624,9 +606,7 @@ def identify_thin_structures(binary_image, method='erosion', kernel_size=2):
     return thin_mask
 
 def identify_skeleton_thin_parts(binary_image):
-    """
-    Identify endpoints and isolated pixels in skeletons.
-    """
+
     kernel = np.ones((3, 3), np.uint8)
     
     # Count neighbors for each pixel
@@ -638,9 +618,7 @@ def identify_skeleton_thin_parts(binary_image):
     return endpoints
 
 def identify_low_connectivity_pixels(binary_image, min_neighbors=2):
-    """
-    Identify pixels with low connectivity (few neighbors).
-    """
+
     kernel = np.ones((3, 3), np.uint8)
     
     # Count neighbors for each pixel
@@ -652,18 +630,172 @@ def identify_low_connectivity_pixels(binary_image, min_neighbors=2):
     return low_connectivity
 
 
+"""
 
 
 
 
 
+def remove_thin_structures(binary_image, density_threshold=0.2, 
+                          thinness_threshold=0.3, window_size=25,
+                          min_region_size=10, connectivity=8):
+    """
+    Remove thin regions (any shape) in low-density areas.
+    
+    Args:
+        binary_image: Binary image (0 and 255)
+        density_threshold: Maximum density to consider for removal (0-1)
+        thinness_threshold: How thin a region must be to be removed (0-1, lower = more thin)
+        window_size: Size of window for density calculation
+        min_region_size: Minimum region size to consider
+        connectivity: 4 or 8 connectivity
+    
+    Returns:
+        cleaned_image: Image without thin regions in sparse areas
+    """
+    if np.sum(binary_image > 0) == 0:
+        return binary_image
+    
+    # Calculate local density map
+    density_map = calculate_local_density(binary_image, window_size)
+    
+    # Find all connected components
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_image, connectivity=connectivity)
+    
+    # Identify thin regions
+    thin_regions_mask = identify_thin_regions(binary_image, labels, stats, thinness_threshold, min_region_size)
+    
+    # Only remove thin regions in low-density areas
+    regions_to_remove = np.zeros_like(binary_image, dtype=bool)
+    
+    for region_id in range(1, num_labels):
+        if thin_regions_mask[labels == region_id].any():
+            # Get the region mask
+            region_mask = (labels == region_id)
+            
+            # Calculate average density for this region
+            region_density = np.mean(density_map[region_mask])
+            
+            # Remove if in low-density area
+            if region_density < density_threshold:
+                regions_to_remove[region_mask] = True
+    
+    # Remove the identified regions
+    cleaned_image = binary_image.copy()
+    cleaned_image[regions_to_remove] = 0
+    
+    removed_pixels = np.sum(regions_to_remove)
+    print(f"Removed {removed_pixels} pixels from {np.sum([np.any(regions_to_remove[labels == i]) for i in range(1, num_labels)])} thin regions in low-density areas")
+    
+    return cleaned_image
 
+def identify_thin_regions(binary_image, labels, stats, thinness_threshold=0.3, min_region_size=10):
+    """
+    Identify regions that are thin based on aspect ratio and skeleton analysis.
+    """
+    thin_mask = np.zeros_like(binary_image, dtype=bool)
+    height, width = binary_image.shape
+    
+    for i in range(1, len(stats)):
+        region_area = stats[i, cv2.CC_STAT_AREA]
+        
+        if region_area < min_region_size:
+            continue
+            
+        region_mask = (labels == i)
+        
+        # Calculate thinness using multiple methods
+        thinness_score = calculate_region_thinness(region_mask, stats[i])
+        
+        # Region is considered thin if below threshold
+        if thinness_score < thinness_threshold:
+            thin_mask[region_mask] = True
+    
+    return thin_mask
 
+def calculate_region_thinness(region_mask, region_stats):
+    """
+    Calculate how thin a region is using multiple metrics.
+    Returns a score between 0 (very thin) and 1 (not thin).
+    """
+    # Method 1: Aspect ratio thinness
+    width = region_stats[cv2.CC_STAT_WIDTH]
+    height = region_stats[cv2.CC_STAT_HEIGHT]
+    area = region_stats[cv2.CC_STAT_AREA]
+    
+    # Compactness measure (thin regions have high perimeter-to-area ratio)
+    perimeter = calculate_region_perimeter(region_mask)
+    compactness = (4 * np.pi * area) / (perimeter ** 2) if perimeter > 0 else 0
+    
+    # Aspect ratio thinness
+    max_dim = max(width, height)
+    min_dim = min(width, height)
+    aspect_thinness = min_dim / max_dim if max_dim > 0 else 0
+    
+    # Area-to-bounding-box ratio (thin regions have low ratio)
+    bbox_area = width * height
+    area_ratio = area / bbox_area if bbox_area > 0 else 0
+    
+    # Combined thinness score (lower = more thin)
+    thinness_score = (compactness + aspect_thinness + area_ratio) / 3.0
+    
+    return thinness_score
 
+def calculate_region_perimeter(region_mask):
+    """
+    Calculate the perimeter of a region using contour detection.
+    """
+    # Convert mask to uint8
+    region_uint8 = region_mask.astype(np.uint8) * 255
+    
+    # Find contours
+    contours, _ = cv2.findContours(region_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if len(contours) == 0:
+        return 0
+    
+    # Use the largest contour
+    perimeter = cv2.arcLength(contours[0], True)
+    return perimeter
 
+def identify_elongated_regions(binary_image, labels, stats, elongation_threshold=0.2):
+    """
+    Alternative method: Identify elongated regions.
+    """
+    elongated_mask = np.zeros_like(binary_image, dtype=bool)
+    
+    for i in range(1, len(stats)):
+        region_mask = (labels == i)
+        
+        # Fit an ellipse to the region
+        points = np.column_stack(np.where(region_mask))
+        if len(points) < 5:  # Need minimum points for ellipse fitting
+            continue
+            
+        ellipse = cv2.fitEllipse(points)
+        (center, axes, angle) = ellipse
+        
+        # Calculate elongation (ratio of minor to major axis)
+        major_axis = max(axes)
+        minor_axis = min(axes)
+        elongation = minor_axis / major_axis if major_axis > 0 else 0
+        
+        if elongation < elongation_threshold:
+            elongated_mask[region_mask] = True
+    
+    return elongated_mask
 
-
-
+def calculate_local_density(binary_image, window_size=25):
+    """
+    Calculate local density of white pixels.
+    """
+    binary_float = (binary_image > 0).astype(np.float32)
+    kernel = np.ones((window_size, window_size), dtype=np.float32)
+    kernel /= np.sum(kernel)
+    density_map = cv2.filter2D(binary_float, -1, kernel)
+    
+    print(f"Density stats - Min: {density_map.min():.3f}, Max: {density_map.max():.3f}, Mean: {density_map.mean():.3f}")
+    return density_map
 
 
 
@@ -718,23 +850,23 @@ def contextual_region_cleaning(binary_image,
         cleaned_image: Contextually cleaned binary image
     """
     # Step 1: Remove thin structures first
-    cleaned = remove_thin_structures_contextual(binary_image, kernel_size=30)
-
+    cleaned = remove_thin_structures_contextual(binary_image, kernel_size=thin_kernel_size)
+    plt.imshow(cleaned)
+    plt.show()
+    
 
     # Step 2: Find all connected components
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(cleaned, connectivity=connectivity)
+    print(num_labels)
     
     if num_labels <= 1:
         return cleaned
     
     # Step 3: Create hierarchy map
     hierarchy_map = build_region_hierarchy(labels, stats)
-
-    
     
     # Step 4: Contextual cleaning based on hierarchy
-    final_image = apply_contextual_cleaning(cleaned, labels, stats, hierarchy_map, 
-                                          min_relative_size, absolute_min_size)
+    final_image = apply_contextual_cleaning(cleaned, labels, stats, hierarchy_map, min_relative_size, absolute_min_size)
     
     return final_image
 
