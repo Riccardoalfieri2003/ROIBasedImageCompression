@@ -85,21 +85,54 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
     # Convert to binary (0 and 255)
     binary_borders = (intensity_borders > 0).astype(np.uint8) * 255
     
-    binary_thin_bordersless=remove_thin_structures(binary_borders, density_threshold=0.15, thinness_threshold=0.3, window_size=25, min_region_size=10)
+    binary_thin_bordersless=remove_thin_structures(binary_borders, density_threshold=0.10, thinness_threshold=0.3, window_size=25, min_region_size=25)
     noiseless_binary_borders=remove_small_noise_regions(binary_thin_bordersless, min_size=75)
+
+    """plt.subplot(1, 3, 1)  # 2 rows, 2 columns, first position
+    plt.imshow(binary_borders)  
+    plt.axis('off')  # Hide the axis labels
+    plt.title("binary_borders") 
+
+    plt.subplot(1, 3, 2)  # 2 rows, 2 columns, first position
+    plt.imshow(binary_thin_bordersless)  
+    plt.axis('off')  # Hide the axis labels
+    plt.title("binary_thin_bordersless") 
+
+    plt.subplot(1, 3, 3)  # 2 rows, 2 columns, first position
+    plt.imshow(noiseless_binary_borders)  
+    plt.axis('off')  # Hide the axis labels
+    plt.title("noiseless_binary_borders") 
+
+    plt.show()"""
+    
     #noiseless_binary_borders=remove_small_noise_regions(binary_borders, min_size=75)
 
     # Skeleton-based connection
-    connected = connect_nearby_pixels(
+    connected_1 = connect_nearby_pixels(
         noiseless_binary_borders,
-        connection_distance=5,
+        connection_distance=25,
         method='skeleton',
-        min_region_size=5
+        min_region_size=25
     )
 
-    plt.imshow(connected)
-    plt.title("connected")
+
+    connected = bridge_small_gaps(connected_1, max_gap=100, density_threshold=0.2, local_window=15, regional_window=25, method="relaxed")
+
+
+
+    plt.subplot(1, 2, 1)  # 2 rows, 2 columns, first position
+    plt.imshow(connected_1)  
+    plt.axis('off')  # Hide the axis labels
+    plt.title("connected_1") 
+
+    # Add the second image to the figure (top-right position)
+    plt.subplot(1, 2, 2)  # 2 rows, 2 columns, second position
+    plt.imshow(connected)  
+    plt.axis('off')  # Hide the axis labels
+    plt.title("connected") 
+
     plt.show()
+
 
     
 
@@ -294,7 +327,7 @@ def directional_region_unification(binary_image,
     plt.title("bridged_image")
     plt.show()
 
-    closed_regions=fill_closed_regions(bridged_image, min_hole_size=10, max_hole_size=1000, connectivity=4)
+    closed_regions=fill_closed_regions(bridged_image, min_hole_size=10, max_hole_size=10000, connectivity=4)
     plt.imshow(closed_regions)
     plt.title("closed_regions")
     plt.show()
@@ -909,61 +942,104 @@ def fill_closed_regions(binary_image, min_hole_size=10, max_hole_size=1000, conn
 
 
 
-def remove_small_noise_regions(binary_image, min_size=5):
+def remove_small_noise_regions(binary_image, min_size=5, density_threshold=0.2, window_size=15):
     """
-    Remove very small noise regions before main processing.
+    Remove small noise regions ONLY in low-density areas.
+    Preserves small regions that are part of dense areas.
     
     Args:
         binary_image: Binary image (0 and 255)
         min_size: Minimum size for noise regions
+        density_threshold: Only remove in areas with density below this (0-1)
+        window_size: Window size for density calculation
     
     Returns:
-        denoised_image: Image with small noise removed
+        denoised_image: Image with small noise removed from sparse areas
     """
-    # Remove small white noise
-    denoised_white = remove_small_components(binary_image, min_size, foreground=255)
+    # Calculate local density
+    density_map = calculate_local_density(binary_image, window_size)
     
-    # Remove small black noise in white regions
-    # Invert to treat black regions as foreground for removal
+    # Remove small white noise in low-density areas
+    denoised_white = remove_small_components_density_aware(
+        binary_image, min_size, foreground=255, 
+        density_map=density_map, density_threshold=density_threshold
+    )
+    
+    # Remove small black noise in low-density areas
     inverted = 255 - denoised_white
-    denoised_black = remove_small_components(inverted, min_size, foreground=255)
+    denoised_black = remove_small_components_density_aware(
+        inverted, min_size, foreground=255,
+        density_map=density_map, density_threshold=density_threshold
+    )
     
     # Convert back
     denoised_image = 255 - denoised_black
     
     return denoised_image
 
-def remove_small_components(binary_image, min_size, foreground=255):
+def remove_small_components_density_aware(binary_image, min_size, foreground=255, 
+                                        density_map=None, density_threshold=0.2):
     """
-    Remove small connected components from binary image.
+    Remove small connected components ONLY in low-density regions.
     
     Args:
         binary_image: Binary image
         min_size: Minimum component size
         foreground: Value representing foreground
+        density_map: Precomputed density map (optional)
+        density_threshold: Only remove in areas with density below this
     
     Returns:
-        cleaned_image: Image with small components removed
+        cleaned_image: Image with small components removed from sparse areas
     """
+    # Calculate density map if not provided
+    if density_map is None:
+        density_map = calculate_local_density(binary_image, window_size=15)
+    
     # Find connected components
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
         (binary_image == foreground).astype(np.uint8), connectivity=8
     )
     
-    # Create mask for components large enough to keep
-    component_mask = np.zeros_like(binary_image, dtype=np.uint8)
+    # Create output image (start with original)
+    cleaned_image = binary_image.copy()
+    
+    # Track removal statistics
+    removed_count = 0
+    preserved_count = 0
     
     for i in range(1, num_labels):
-        if stats[i, cv2.CC_STAT_AREA] >= min_size:
-            component_mask[labels == i] = 255
+        region_mask = (labels == i)
+        region_area = stats[i, cv2.CC_STAT_AREA]
+        
+        # Only consider small regions for removal
+        if region_area < min_size:
+            # Calculate average density for this region
+            region_density = np.mean(density_map[region_mask])
+            
+            # Only remove if in low-density area
+            if region_density < density_threshold:
+                # Remove this component
+                cleaned_image[region_mask] = 0 if foreground == 255 else 255
+                removed_count += 1
+            else:
+                # Preserve - it's in a dense area (likely important)
+                preserved_count += 1
     
-    # Preserve the original values for kept components
-    if foreground == 255:
-        cleaned_image = component_mask
-    else:
-        cleaned_image = 255 - component_mask
+    print(f"Removed {removed_count} small components in low-density areas")
+    print(f"Preserved {preserved_count} small components in dense areas")
     
     return cleaned_image
+
+
+
+
+
+
+
+
+
+
 
 # Keep your existing remove_small_regions function
 def remove_small_regions(binary_image, min_size=10, remove_thin_lines=False, kernel_size=3):
@@ -1624,7 +1700,7 @@ def apply_contextual_cleaning(binary_image, labels, stats, hierarchy,
 
 
 if __name__ == "__main__":
-    image_name = 'images/Lenna.webp'
+    image_name = 'images/Hawaii.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     #image_rgb=get_enhanced_image(image_rgb, shadow_threshold=100)
@@ -1645,7 +1721,7 @@ if __name__ == "__main__":
 
 
 
-    threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") /100
+    threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") / 100
     
     window_size = math.floor(factor)
     min_region_size= math.ceil( image_rgb.size / math.pow(10, math.ceil(math.log(image_rgb.size, 10))-3 ) ) 
