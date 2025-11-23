@@ -3,8 +3,9 @@ import cv2
 from matplotlib import pyplot as plt
 import numpy as np
 
-from edges import get_edge_map
-from clahe import get_enhanced_image
+#from edges import get_edge_map
+from .edges import get_edge_map
+#from clahe import get_enhanced_image
 
 
 
@@ -356,11 +357,11 @@ def directional_region_unification(binary_image,
 
     # INSTEAD OF:
     # cleaned_image = remove_thin_structures(bridged_image, kernel_size=25)
-    # cleaned_image = remove_small_regions(cleaned_image, min_size=5, remove_thin_lines=True, kernel_size=30)
+    cleaned_image = remove_small_regions(closed_regions, min_size=5, remove_thin_lines=True, kernel_size=30)
 
     # USE THIS:
     """cleaned_image = contextual_region_cleaning(
-        bridged_image,
+        closed_regions,
         thin_kernel_size=3,           # For thin structure removal (3-7)
         min_relative_size=0.01,       # 2% of parent region size
         absolute_min_size=100,         # Absolute minimum size
@@ -371,9 +372,9 @@ def directional_region_unification(binary_image,
     #plt.show()
     
     # Create region map
-    region_map = (closed_regions > 0).astype(np.uint8)
+    region_map = (cleaned_image > 0).astype(np.uint8)
     
-    return closed_regions, region_map
+    return cleaned_image, region_map
 
 def detect_meaningful_borders(binary_image, sensitivity=0.7):
     """

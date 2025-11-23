@@ -466,7 +466,7 @@ def should_split(image_rgb):
     decision = split_score >= base_threshold
     print(f"Decision: {'SPLIT' if decision else 'KEEP'} (threshold: {base_threshold})")
     
-    return decision
+    return decision, split_score
 
 
 
