@@ -191,6 +191,12 @@ def visualize_split_analysis(region_image, overall_score, color_score, texture_s
 
 
 
+def normalize_result(score, window_size):
+        return window_size/( 1+ math.exp(-12*(score-0.5)) ) 
+
+
+
+
 if __name__ == "__main__":
     image_name = 'images/kauai.jpg'
     image = cv2.imread(image_name)
@@ -337,20 +343,17 @@ if __name__ == "__main__":
 
         #if overall_score == 0: 
         #    continue
+
+        window =math.ceil( math.ceil(math.log(bbox_region.size, 10)) * math.log(bbox_region.size) )
+        print(f"Window: {window} px")
+        normalized_overall_score=normalize_result(overall_score, window)
+        optimal_segments=math.ceil(normalized_overall_score)
         
         # Calculate optimal segments based on score
-        optimal_segments = calculate_optimal_segments(overall_score, region['area'])
+        #optimal_segments = calculate_optimal_segments(overall_score, region['area'], min_segments=1, max_segments=factor)
         if optimal_segments<=0: optimal_segments=1
-        
-        # Apply enhanced SLIC ONLY to the irregular region using the mask
-        roi_segments = slic(
-            bbox_region, 
-            n_segments=optimal_segments,
-            compactness=10,
-            sigma=1,
-            mask=bbox_mask,  # ← THIS IS THE KEY: Only segment the irregular region
-            channel_axis=2
-        )
+
+        roi_segments, texture_map = enhanced_slic_with_texture(bbox_region, n_segments=optimal_segments)
         
         # Visualize
         visualize_split_analysis(
@@ -364,12 +367,12 @@ if __name__ == "__main__":
         # Display SLIC results
         plt.figure(figsize=(15, 5))
 
-        plt.subplot(1, 3, 1)
+        plt.subplot(1, 4, 1)
         plt.imshow(region_image)
         plt.title(f'ROI Region {i+1}')
         plt.axis('off')
 
-        plt.subplot(1, 3, 2)
+        plt.subplot(1, 4, 2)
         # Show segments only within the irregular region
         segments_display = roi_segments.copy()
         segments_display[~bbox_mask] = 0  # Set background to 0
@@ -377,7 +380,7 @@ if __name__ == "__main__":
         plt.title(f'SLIC Segments: {roi_segments.max()}')
         plt.axis('off')
 
-        plt.subplot(1, 3, 3)
+        plt.subplot(1, 4, 3)
         # Create boundaries only within the irregular region
         boundaries_image = mark_boundaries(bbox_region, roi_segments)
         boundaries_image[~bbox_mask] = 0  # Set background to black
@@ -385,55 +388,89 @@ if __name__ == "__main__":
         plt.title('SLIC Boundaries (Region Only)')
         plt.axis('off')
 
+        plt.subplot(1, 4, 4)
+        plt.imshow(texture_map)
+        plt.title('texture_map')
+        plt.axis('off')
+
         plt.tight_layout()
         plt.show()
 
 
-    sys.exit(0)
 
 
 
-
-    for region in nonroi_regions:
-
+    
+    for i, region in enumerate(nonroi_regions):
         # Apply SLIC only to the bounding box region
         minr, minc, maxr, maxc = region['bbox']
         
         # Extract the region from the original image
         bbox_region = image_rgb[minr:maxr, minc:maxc]
+        bbox_mask = region['bbox_mask']  # This masks only the actual irregular region
 
-        region_image=bbox_region
-        #nonroi_score=calculate_split_score(bbox_region)
-        overall_score, color_score, texture_score = calculate_split_score(bbox_region)
+        region_image = bbox_region
+        
+        # Calculate split score ONLY on the irregular region (using the mask)
+        overall_score, color_score, texture_score = calculate_split_score(bbox_region, bbox_mask)
+        
+        print(f"Region {i+1}:")
+        print(f"  Overall score: {overall_score:.3f}")
+        print(f"  Color score: {color_score:.3f}")
+        print(f"  Texture score: {texture_score:.3f}")
 
-        print(f"nonroi_score {overall_score}")
+        #if overall_score == 0: 
+        #    continue
 
-        if overall_score==0: continue
+        window =math.ceil( math.ceil(math.log(bbox_region.size, 10)) * math.log(bbox_region.size) )
+        print(f"Window: {window} px")
+        normalized_overall_score=normalize_result(overall_score, window)
+        optimal_segments=math.ceil(normalized_overall_score)
+        
+        # Calculate optimal segments based on score
+        #optimal_segments = calculate_optimal_segments(overall_score, region['area'], min_segments=1, max_segments=factor)
+        if optimal_segments<=0: optimal_segments=1
 
-        # Apply SLIC only on non-ROI regions
-        nonroi_segments = slic(bbox_region, 
-                            n_segments=math.ceil(overall_score),
-                            compactness=10,
-                            sigma=1,
-                            mask=region["bbox_mask"])
+        nonroi_segments, texture_map = enhanced_slic_with_texture(bbox_region, n_segments=optimal_segments)
+        
+        # Visualize
+        visualize_split_analysis(
+            region_image=region_image,
+            overall_score=overall_score,
+            color_score=color_score, 
+            texture_score=texture_score,
+            optimal_segments=optimal_segments
+        )
 
-        # Display results
+        # Display SLIC results
         plt.figure(figsize=(15, 5))
 
-        plt.subplot(1, 3, 1)
+        plt.subplot(1, 4, 1)
         plt.imshow(region_image)
-        plt.title('Non-ROI Regions Only')
+        plt.title(f'ROI Region {i+1}')
         plt.axis('off')
 
-        plt.subplot(1, 3, 2)
-        plt.imshow(nonroi_segments, cmap='nipy_spectral')
-        plt.title('SLIC on Non-ROI Regions')
+        plt.subplot(1, 4, 2)
+        # Show segments only within the irregular region
+        segments_display = nonroi_segments.copy()
+        segments_display[~bbox_mask] = 0  # Set background to 0
+        plt.imshow(segments_display, cmap='nipy_spectral')
+        plt.title(f'SLIC Segments: {nonroi_segments.max()}')
         plt.axis('off')
 
-        plt.subplot(1, 3, 3)
-        plt.imshow(mark_boundaries(region_image, nonroi_segments))
-        plt.title('SLIC Boundaries on Non-ROI')
+        plt.subplot(1, 4, 3)
+        # Create boundaries only within the irregular region
+        boundaries_image = mark_boundaries(bbox_region, nonroi_segments)
+        boundaries_image[~bbox_mask] = 0  # Set background to black
+        plt.imshow(boundaries_image)
+        plt.title('SLIC Boundaries (Region Only)')
+        plt.axis('off')
+
+        plt.subplot(1, 4, 4)
+        plt.imshow(texture_map)
+        plt.title('texture_map')
         plt.axis('off')
 
         plt.tight_layout()
         plt.show()
+
