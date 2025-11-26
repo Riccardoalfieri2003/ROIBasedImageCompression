@@ -582,74 +582,54 @@ if __name__ == "__main__":
 
 
 
-
 import matplotlib.pyplot as plt
 import numpy as np
 
-def plot_fourier_compression_comparison(original_coeffs, original_coords, test_ratios=[0.05, 0.1, 0.2, 0.5]):
+def create_irregular_shape(n_points=50):
     """
-    Plot original shape vs compressed reconstructions for different ratios
+    Create various types of irregular shapes for testing
     """
-    # Reconstruct original shape from full coefficients
-    z_original = np.fft.ifft(original_coeffs)
-    x_original = z_original.real
-    y_original = z_original.imag
+    shapes = []
     
-    # Create subplot grid - FIXED: Calculate proper grid size
-    n_plots = len(test_ratios) + 1  # +1 for original
-    n_cols = min(3, n_plots)  # Max 3 columns
-    n_rows = (n_plots + n_cols - 1) // n_cols  # Ceiling division
+    # 1. Random blob shape
+    theta = np.linspace(0, 2*np.pi, n_points, endpoint=False)
+    r = 1 + 0.4 * np.random.normal(size=n_points)
+    # Smooth the radius a bit
+    from scipy.ndimage import gaussian_filter1d
+    r = gaussian_filter1d(r, sigma=2)
+    x1 = r * np.cos(theta)
+    y1 = r * np.sin(theta)
+    shapes.append(('Random Blob', np.column_stack([x1, y1])))
     
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+    # 2. Kidney bean shape
+    theta = np.linspace(0, 2*np.pi, n_points, endpoint=False)
+    x2 = 1.5 * np.cos(theta) + 0.5 * np.cos(2*theta)
+    y2 = np.sin(theta) + 0.3 * np.sin(3*theta)
+    shapes.append(('Kidney Bean', np.column_stack([x2, y2])))
     
-    # Handle single subplot case
-    if n_plots == 1:
-        axes = np.array([axes])
-    axes = axes.flatten()
+    # 3. Amoeba-like shape
+    theta = np.linspace(0, 2*np.pi, n_points, endpoint=False)
+    r3 = 1 + 0.3 * np.sin(2*theta) + 0.2 * np.sin(5*theta) + 0.1 * np.sin(8*theta)
+    x3 = r3 * np.cos(theta)
+    y3 = r3 * np.sin(theta)
+    shapes.append(('Amoeba', np.column_stack([x3, y3])))
     
-    # Plot original
-    axes[0].plot(x_original, y_original, 'b-', linewidth=2, label='Original')
-    if original_coords is not None:
-        axes[0].plot(original_coords[:, 0], original_coords[:, 1], 'ro', markersize=3, alpha=0.6)
-    axes[0].set_title(f'Original Shape\n{len(original_coeffs)} coefficients')
-    axes[0].legend()
-    axes[0].axis('equal')
-    axes[0].grid(True, alpha=0.3)
+    # 4. Irregular polygon (more jagged)
+    theta = np.linspace(0, 2*np.pi, n_points, endpoint=False)
+    r4 = 1 + 0.5 * np.random.normal(size=n_points)
+    r4 = gaussian_filter1d(r4, sigma=1)  # Less smoothing for jaggedness
+    x4 = r4 * np.cos(theta)
+    y4 = r4 * np.sin(theta)
+    shapes.append(('Jagged Polygon', np.column_stack([x4, y4])))
     
-    # Plot compressed versions - FIXED: Use correct indexing
-    for idx, ratio in enumerate(test_ratios):
-        i = idx + 1  # Start from index 1 (0 is original)
-        
-        # Compress
-        compressed_coeffs = compress_fourier(original_coeffs, keep_ratio=ratio)
-        
-        # Reconstruct
-        z_compressed = np.fft.ifft(compressed_coeffs)
-        x_compressed = z_compressed.real
-        y_compressed = z_compressed.imag
-        
-        # Calculate how many coefficients were kept
-        n_kept = np.sum(compressed_coeffs != 0)
-        
-        # Calculate error
-        error = np.mean(np.sqrt((x_compressed - x_original)**2 + (y_compressed - y_original)**2))
-        
-        # Plot
-        axes[i].plot(x_compressed, y_compressed, 'g-', linewidth=2, label='Compressed')
-        axes[i].plot(x_original, y_original, 'b--', linewidth=1, alpha=0.5, label='Original')
-        if original_coords is not None:
-            axes[i].plot(original_coords[:, 0], original_coords[:, 1], 'ro', markersize=3, alpha=0.6)
-        axes[i].set_title(f'Ratio: {ratio:.0%}\n{n_kept}/{len(original_coeffs)} coeffs\nError: {error:.4f}')
-        axes[i].legend()
-        axes[i].axis('equal')
-        axes[i].grid(True, alpha=0.3)
+    # 5. Asymmetric shape
+    theta = np.linspace(0, 2*np.pi, n_points, endpoint=False)
+    r5 = 1 + 0.4 * np.sin(theta) + 0.2 * np.cos(3*theta)  # Asymmetric components
+    x5 = r5 * np.cos(theta)
+    y5 = r5 * np.sin(theta)
+    shapes.append(('Asymmetric', np.column_stack([x5, y5])))
     
-    # Hide empty subplots if any - FIXED: Correct range
-    for i in range(n_plots, len(axes)):
-        axes[i].set_visible(False)
-    
-    plt.tight_layout()
-    plt.show()
+    return shapes
 
 def compress_fourier(coeffs, keep_ratio=0.1):
     """
@@ -669,46 +649,18 @@ def compress_fourier(coeffs, keep_ratio=0.1):
     
     return compressed
 
-# Simplified test function
-def test_compression_visualization():
+def plot_irregular_shape_compression(shape_name, coordinates, test_ratios=[0.05, 0.1, 0.2, 0.5]):
     """
-    Test the compression visualization with your Fourier coefficients
+    Plot compression results for a single irregular shape
     """
-    num_points=200
-    # Create a sample shape for testing
-    theta = np.linspace(0, 2*np.pi, num_points, endpoint=False)
-    x = np.cos(theta) * (1 + 0.3 * np.cos(5*theta))
-    y = np.sin(theta) * (1 + 0.3 * np.cos(5*theta))
-    coordinates = np.column_stack([x, y])
-    
     # Get Fourier coefficients
     z_points = coordinates[:, 0] + 1j * coordinates[:, 1]
     fourier_coeffs = np.fft.fft(z_points)
     
-    print("Fourier Compression Visualization")
-    print("=" * num_points)
-    print(f"Original shape: {len(coordinates)} points")
-    print(f"Fourier coefficients: {len(fourier_coeffs)}")
+    # Reconstruct original shape from full coefficients
+    z_original = np.fft.ifft(fourier_coeffs)
     
-    # Show coefficient magnitudes for reference
-    magnitudes = np.abs(fourier_coeffs)
-    print(f"\nTop 5 coefficients by magnitude:")
-    top_indices = np.argsort(magnitudes)[-5:][::-1]
-    for idx in top_indices:
-        print(f"  c[{idx}]: magnitude = {magnitudes[idx]:.3f}")
-    
-    # Create the comparison plots
-    plot_fourier_compression_comparison(fourier_coeffs, coordinates)
-    
-    return fourier_coeffs
-
-# Even simpler version - single row plot
-def plot_simple_compression_comparison(original_coeffs, original_coords, test_ratios=[0.05, 0.1, 0.2, 0.5]):
-    """
-    Simple one-row comparison that definitely works
-    """
-    z_original = np.fft.ifft(original_coeffs)
-    
+    # Create subplot
     fig, axes = plt.subplots(1, len(test_ratios) + 1, figsize=(5*(len(test_ratios)+1), 5))
     
     # Make sure axes is always iterable
@@ -718,40 +670,174 @@ def plot_simple_compression_comparison(original_coeffs, original_coords, test_ra
         axes = axes.flatten()
     
     # Plot original
-    axes[0].plot(z_original.real, z_original.imag, 'b-', linewidth=2)
-    axes[0].set_title(f'Original\n{len(original_coeffs)} coeffs')
+    axes[0].plot(z_original.real, z_original.imag, 'b-', linewidth=2, label='Original')
+    axes[0].plot(coordinates[:, 0], coordinates[:, 1], 'ro', markersize=3, alpha=0.6, label='Points')
+    axes[0].set_title(f'{shape_name}\nOriginal\n{len(fourier_coeffs)} coeffs')
+    axes[0].legend()
     axes[0].axis('equal')
     axes[0].grid(True, alpha=0.3)
     
+    # Calculate and display coefficient statistics
+    magnitudes = np.abs(fourier_coeffs)
+    top_indices = np.argsort(magnitudes)[-3:][::-1]  # Top 3 coefficients
+    print(f"\n{shape_name} - Top 3 coefficients:")
+    for idx in top_indices:
+        print(f"  c[{idx}]: magnitude = {magnitudes[idx]:.3f} ({magnitudes[idx]/np.max(magnitudes):.1%} of max)")
+    
     # Plot compressed versions
     for i, ratio in enumerate(test_ratios, 1):
-        compressed_coeffs = compress_fourier(original_coeffs, keep_ratio=ratio)
+        compressed_coeffs = compress_fourier(fourier_coeffs, keep_ratio=ratio)
         z_compressed = np.fft.ifft(compressed_coeffs)
         
-        axes[i].plot(z_compressed.real, z_compressed.imag, 'g-', linewidth=2)
+        # Calculate error
+        error = np.mean(np.sqrt((z_compressed.real - z_original.real)**2 + 
+                               (z_compressed.imag - z_original.imag)**2))
+        
         n_kept = np.sum(compressed_coeffs != 0)
-        axes[i].set_title(f'{ratio:.0%} Compression\n{n_kept} coeffs')
+        
+        axes[i].plot(z_compressed.real, z_compressed.imag, 'g-', linewidth=2, label='Compressed')
+        axes[i].plot(z_original.real, z_original.imag, 'b--', linewidth=1, alpha=0.3, label='Original')
+        axes[i].set_title(f'{ratio:.0%} Compression\n{n_kept} coeffs\nError: {error:.4f}')
+        axes[i].legend()
         axes[i].axis('equal')
         axes[i].grid(True, alpha=0.3)
     
     plt.tight_layout()
     plt.show()
-
-# Run the visualization
-if __name__ == "__main__":
-    print("Testing Fourier compression...")
     
-    # Use the simple version first to test
-    theta = np.linspace(0, 2*np.pi, 50, endpoint=False)
-    x = np.cos(theta) * (1 + 0.3 * np.cos(5*theta))
-    y = np.sin(theta) * (1 + 0.3 * np.cos(5*theta))
+    return fourier_coeffs
+
+def analyze_irregular_shape_compression():
+    """
+    Comprehensive analysis of Fourier compression on irregular shapes
+    """
+    # Create various irregular shapes
+    shapes = create_irregular_shape(n_points=40)
+    
+    print("IRREGULAR SHAPE FOURIER COMPRESSION ANALYSIS")
+    print("=" * 60)
+    
+    all_results = []
+    
+    for shape_name, coordinates in shapes:
+        print(f"\n{'='*50}")
+        print(f"ANALYZING: {shape_name}")
+        print(f"{'='*50}")
+        
+        # Normalize coordinates for better visualization
+        coords_normalized = coordinates - np.mean(coordinates, axis=0)
+        coords_normalized = coords_normalized / np.max(np.abs(coords_normalized))
+        
+        # Analyze this shape
+        fourier_coeffs = plot_irregular_shape_compression(shape_name, coords_normalized)
+        
+        # Store results
+        magnitudes = np.abs(fourier_coeffs)
+        total_energy = np.sum(magnitudes**2)
+        
+        # Calculate compression efficiency
+        test_ratios = [0.05, 0.1, 0.2, 0.5]
+        shape_results = {'name': shape_name, 'energy_distribution': []}
+        
+        for ratio in test_ratios:
+            compressed_coeffs = compress_fourier(fourier_coeffs, keep_ratio=ratio)
+            kept_energy = np.sum(np.abs(compressed_coeffs)**2)
+            energy_ratio = kept_energy / total_energy
+            
+            shape_results['energy_distribution'].append({
+                'ratio': ratio,
+                'energy_kept': energy_ratio,
+                'coeffs_kept': np.sum(compressed_coeffs != 0)
+            })
+        
+        all_results.append(shape_results)
+    
+    # Print summary table
+    print("\n" + "="*70)
+    print("COMPRESSION SUMMARY - ENERGY PRESERVATION")
+    print("="*70)
+    print("Shape           | 5% coeffs | 10% coeffs | 20% coeffs | 50% coeffs")
+    print("-"*70)
+    
+    for result in all_results:
+        energies = [f"{e['energy_kept']:.1%}" for e in result['energy_distribution']]
+        print(f"{result['name']:15} | {energies[0]:>9} | {energies[1]:>10} | {energies[2]:>10} | {energies[3]:>10}")
+    
+    return all_results
+
+def plot_energy_comparison(all_results):
+    """
+    Plot energy preservation across different shapes and compression ratios
+    """
+    test_ratios = [0.05, 0.1, 0.2, 0.5]
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    for result in all_results:
+        energies = [e['energy_kept'] for e in result['energy_distribution']]
+        ax.plot(test_ratios, energies, 'o-', label=result['name'], linewidth=2, markersize=8)
+    
+    ax.set_xlabel('Compression Ratio (Fraction of Coefficients Kept)')
+    ax.set_ylabel('Fraction of Energy Preserved')
+    ax.set_title('Fourier Compression: Energy Preservation vs Compression Ratio\nfor Irregular Shapes')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, 1.1)
+    
+    plt.tight_layout()
+    plt.show()
+
+# Quick test function for a single irregular shape
+def test_single_irregular_shape():
+    """
+    Test compression on one particularly irregular shape
+    """
+    # Create a very irregular shape
+    np.random.seed(42)  # For reproducible results
+    theta = np.linspace(0, 2*np.pi, 35, endpoint=False)
+    
+    # Highly irregular radius with multiple frequencies
+    r = (1 + 0.3 * np.sin(2*theta) + 
+         0.4 * np.cos(3*theta) + 
+         0.2 * np.sin(7*theta) + 
+         0.3 * np.random.normal(size=len(theta)))
+    
+    from scipy.ndimage import gaussian_filter1d
+    r = gaussian_filter1d(r, sigma=1.5)  # Mild smoothing
+    
+    x = r * np.cos(theta)
+    y = r * np.sin(theta)
+    
     coordinates = np.column_stack([x, y])
     
-    z_points = coordinates[:, 0] + 1j * coordinates[:, 1]
-    fourier_coeffs = np.fft.fft(z_points)
+    print("TESTING HIGHLY IRREGULAR SHAPE")
+    print("=" * 50)
     
-    # Test with simple version first
-    plot_simple_compression_comparison(fourier_coeffs, coordinates)
+    fourier_coeffs = plot_irregular_shape_compression(
+        "Highly Irregular Shape", 
+        coordinates,
+        test_ratios=[0.02, 0.05, 0.1, 0.2, 0.3]  # More aggressive compression
+    )
     
-    # Then try the detailed version
-    test_compression_visualization()
+    # Analyze coefficient distribution
+    magnitudes = np.abs(fourier_coeffs)
+    print(f"\nCoefficient Analysis:")
+    print(f"Total coefficients: {len(fourier_coeffs)}")
+    print(f"Maximum magnitude: {np.max(magnitudes):.3f}")
+    print(f"Number of 'significant' coefficients (mag > 1% of max): {np.sum(magnitudes > 0.01 * np.max(magnitudes))}")
+    
+    return fourier_coeffs
+
+# Run the analysis
+if __name__ == "__main__":
+    print("Testing Fourier Compression on Irregular Shapes")
+    print("=" * 60)
+    
+    # Option 1: Test multiple irregular shapes
+    print("\n1. TESTING MULTIPLE IRREGULAR SHAPES")
+    all_results = analyze_irregular_shape_compression()
+    plot_energy_comparison(all_results)
+    
+    # Option 2: Test a single highly irregular shape
+    print("\n2. TESTING SINGLE HIGHLY IRREGULAR SHAPE")
+    test_single_irregular_shape()
