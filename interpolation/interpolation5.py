@@ -149,36 +149,37 @@ def create_test_shapes():
     Create various types of irregular shapes for testing compression
     """
     shapes = {}
+    num_points=1000
     
     # 1. Organic blob shape
-    theta = np.linspace(0, 2*np.pi, 50, endpoint=False)
+    theta = np.linspace(0, 2*np.pi, num_points, endpoint=False)
     r = 1 + 0.4 * np.sin(2*theta) + 0.3 * np.cos(5*theta) + 0.2 * np.sin(7*theta)
     x = r * np.cos(theta)
     y = r * np.sin(theta)
     shapes['Organic Blob'] = list(zip(x, y))
     
     # 2. Starfish-like shape
-    theta = np.linspace(0, 2*np.pi, 60, endpoint=False)
+    theta = np.linspace(0, 2*np.pi, num_points, endpoint=False)
     r = 1 + 0.5 * np.cos(5*theta) + 0.2 * np.cos(10*theta)
     x = r * np.cos(theta)
     y = r * np.sin(theta)
     shapes['Starfish'] = list(zip(x, y))
     
     # 3. Kidney bean shape (asymmetric)
-    theta = np.linspace(0, 2*np.pi, 45, endpoint=False)
+    theta = np.linspace(0, 2*np.pi, num_points, endpoint=False)
     x = 1.5 * np.cos(theta) + 0.8 * np.cos(2*theta)
     y = np.sin(theta) + 0.5 * np.sin(3*theta)
     shapes['Kidney Bean'] = list(zip(x, y))
     
     # 4. Spiral-like irregular shape
-    theta = np.linspace(0, 2*np.pi, 55, endpoint=False)
+    theta = np.linspace(0, 2*np.pi, num_points, endpoint=False)
     r = 1 + 0.3 * np.sin(3*theta) * np.cos(2*theta)
     x = r * np.cos(theta)
     y = r * np.sin(theta)
     shapes['Spiral Irregular'] = list(zip(x, y))
     
     # 5. Very jagged shape
-    theta = np.linspace(0, 2*np.pi, 40, endpoint=False)
+    theta = np.linspace(0, 2*np.pi, num_points, endpoint=False)
     r = 1 + 0.6 * np.random.normal(size=len(theta))
     # Smooth slightly but keep jaggedness
     from scipy.ndimage import gaussian_filter1d
@@ -188,7 +189,7 @@ def create_test_shapes():
     shapes['Jagged Polygon'] = list(zip(x, y))
     
     # 6. Heart-like shape (mathematical heart curve)
-    t = np.linspace(0, 2*np.pi, 50, endpoint=False)
+    t = np.linspace(0, 2*np.pi, num_points, endpoint=False)
     x = 16 * np.sin(t)**3
     y = 13 * np.cos(t) - 5 * np.cos(2*t) - 2 * np.cos(3*t) - np.cos(4*t)
     # Normalize
@@ -197,21 +198,21 @@ def create_test_shapes():
     shapes['Heart'] = list(zip(x, y))
     
     # 7. Flower shape
-    theta = np.linspace(0, 2*np.pi, 65, endpoint=False)
+    theta = np.linspace(0, 2*np.pi, num_points, endpoint=False)
     r = 1 + 0.4 * np.cos(6*theta) + 0.2 * np.cos(12*theta)
     x = r * np.cos(theta)
     y = r * np.sin(theta)
     shapes['Flower'] = list(zip(x, y))
     
     # 8. Gear-like shape
-    theta = np.linspace(0, 2*np.pi, 48, endpoint=False)
+    theta = np.linspace(0, 2*np.pi, num_points, endpoint=False)
     r = 1 + 0.3 * np.sign(np.sin(8*theta))
     x = r * np.cos(theta)
     y = r * np.sin(theta)
     shapes['Gear'] = list(zip(x, y))
     
     # 9. Random amoeba shape
-    theta = np.linspace(0, 2*np.pi, 35, endpoint=False)
+    theta = np.linspace(0, 2*np.pi, num_points, endpoint=False)
     r = 1 + 0.5 * np.random.normal(size=len(theta))
     r = gaussian_filter1d(r, sigma=2.5)  # More smoothing for organic look
     x = r * np.cos(theta)
@@ -219,7 +220,7 @@ def create_test_shapes():
     shapes['Amoeba'] = list(zip(x, y))
     
     # 10. Complex multi-lobed shape
-    theta = np.linspace(0, 2*np.pi, 70, endpoint=False)
+    theta = np.linspace(0, 2*np.pi, num_points, endpoint=False)
     r = (1 + 0.4 * np.sin(2*theta) + 
          0.3 * np.cos(3*theta) + 
          0.2 * np.sin(5*theta) + 
@@ -250,6 +251,7 @@ def test_shape_compression(shape_name, coordinates, compression_ratios=[1.0, 0.3
         )
         
         storage = result['storage_info']
+        print(storage)
         reconstruction = result['reconstruction_info']
         
         print(f"Compression {ratio:.0%}:")
@@ -422,7 +424,8 @@ def run_comprehensive_tests():
             results = test_shape_compression(
                 shape_name, 
                 shapes[shape_name],
-                compression_ratios=[1.0, 0.3, 0.1, 0.05]
+                compression_ratios=[1.0, 0.3, 0.2, 0.1, 0.05]
+                #compression_ratios=[0.2]
             )
             all_detailed_results[shape_name] = results
     

@@ -197,6 +197,90 @@ def normalize_result(score, window_size):
 
 
 
+
+
+
+
+
+
+
+
+
+from skimage.segmentation import find_boundaries
+from skimage.measure import find_contours
+import numpy as np
+
+def extract_slic_segment_boundaries(roi_segments, bbox_mask):
+    """
+    Extract boundaries of all SLIC segments within the irregular region
+    
+    Returns:
+    --------
+    list of dictionaries, each containing:
+        'segment_id': ID of the segment
+        'boundary_coords': list of (y,x) coordinates
+        'area': number of pixels in segment
+    """
+    segment_boundaries = []
+    
+    # Get unique segment IDs (excluding background)
+    segment_ids = np.unique(roi_segments)
+    segment_ids = segment_ids[segment_ids != 0]  # Remove background
+    
+    for seg_id in segment_ids:
+        # Create mask for this specific segment
+        segment_mask = (roi_segments == seg_id) & bbox_mask
+        
+        if np.sum(segment_mask) > 0:  # If segment exists in our region
+            # Find contours/boundaries
+            contours = find_contours(segment_mask, level=0.5)
+            
+            # Take the longest contour (main boundary)
+            if len(contours) > 0:
+                main_contour = max(contours, key=len)
+                
+                # Convert to list of (y,x) coordinates
+                boundary_coords = [(coord[0], coord[1]) for coord in main_contour]
+                
+                segment_boundaries.append({
+                    'segment_id': int(seg_id),
+                    'boundary_coords': boundary_coords,
+                    'area': np.sum(segment_mask),
+                    'num_points': len(boundary_coords)
+                })
+    
+    return segment_boundaries
+
+def save_boundaries_to_file(segment_boundaries, filename):
+    """
+    Save segment boundaries to a text file
+    """
+    with open(filename, 'w') as f:
+        f.write("SLIC Segment Boundaries\n")
+        f.write("=" * 50 + "\n")
+        
+        for segment in segment_boundaries:
+            f.write(f"\nSegment {segment['segment_id']}:\n")
+            f.write(f"Area: {segment['area']} pixels\n")
+            f.write(f"Boundary points: {segment['num_points']}\n")
+            f.write("Coordinates (y,x):\n")
+            
+            # Write coordinates in batches for readability
+            f.write("[")
+            for i in range(0, len(segment['boundary_coords']), 5):
+                batch = segment['boundary_coords'][i:i+5]
+                coord_str = "  ".join([f"({y:.1f},{x:.1f})," for y, x in batch])
+                f.write(f"  {coord_str} \n")
+            f.write("]")
+
+
+
+
+
+
+
+
+
 if __name__ == "__main__":
     image_name = 'images/kauai.jpg'
     image = cv2.imread(image_name)
@@ -323,6 +407,7 @@ if __name__ == "__main__":
         visualize_split_analysis(region_image, overall_score, color_score, texture_score, optimal_segments):"""
     
 
+    """    
     for i, region in enumerate(roi_regions):
         # Apply SLIC only to the bounding box region
         minr, minc, maxr, maxc = region['bbox']
@@ -396,7 +481,134 @@ if __name__ == "__main__":
         plt.tight_layout()
         plt.show()
 
+    """
 
+
+
+    for i, region in enumerate(roi_regions):
+        # Apply SLIC only to the bounding box region
+        minr, minc, maxr, maxc = region['bbox']
+        
+        # Extract the region from the original image
+        bbox_region = image_rgb[minr:maxr, minc:maxc]
+        bbox_mask = region['bbox_mask']  # This masks only the actual irregular region
+
+        region_image = bbox_region
+        
+        # Calculate split score ONLY on the irregular region (using the mask)
+        overall_score, color_score, texture_score = calculate_split_score(bbox_region, bbox_mask)
+        
+        print(f"Region {i+1}:")
+        print(f"  Overall score: {overall_score:.3f}")
+        print(f"  Color score: {color_score:.3f}")
+        print(f"  Texture score: {texture_score:.3f}")
+
+        window = math.ceil(math.ceil(math.log(bbox_region.size, 10)) * math.log(bbox_region.size))
+        print(f"Window: {window} px")
+        normalized_overall_score = normalize_result(overall_score, window)
+        optimal_segments = math.ceil(normalized_overall_score)
+        
+        if optimal_segments <= 0: 
+            optimal_segments = 1
+
+        roi_segments, texture_map = enhanced_slic_with_texture(bbox_region, n_segments=optimal_segments)
+        
+        # 🆕 EXTRACT SEGMENT BOUNDARIES
+        segment_boundaries = extract_slic_segment_boundaries(roi_segments, bbox_mask)
+        
+        print(f"  Found {len(segment_boundaries)} sub-regions")
+        
+        # 🆕 SAVE TO FILE
+        filename = f"region_{i+1}_boundaries.txt"
+        save_boundaries_to_file(segment_boundaries, filename)
+        print(f"  Boundaries saved to: {filename}")
+        
+        # 🆕 PRINT SUMMARY
+        total_boundary_points = sum(seg['num_points'] for seg in segment_boundaries)
+        print(f"  Total boundary points: {total_boundary_points}")
+        
+        # Visualize
+        visualize_split_analysis(
+            region_image=region_image,
+            overall_score=overall_score,
+            color_score=color_score, 
+            texture_score=texture_score,
+            optimal_segments=optimal_segments
+        )
+
+        # Display SLIC results WITH BOUNDARIES
+        plt.figure(figsize=(18, 5))
+
+        plt.subplot(1, 5, 1)
+        plt.imshow(region_image)
+        plt.title(f'ROI Region {i+1}')
+        plt.axis('off')
+
+        plt.subplot(1, 5, 2)
+        # Show segments only within the irregular region
+        segments_display = roi_segments.copy()
+        segments_display[~bbox_mask] = 0  # Set background to 0
+        plt.imshow(segments_display, cmap='nipy_spectral')
+        plt.title(f'SLIC Segments: {roi_segments.max()}')
+        plt.axis('off')
+
+        plt.subplot(1, 5, 3)
+        # Create boundaries only within the irregular region
+        boundaries_image = mark_boundaries(bbox_region, roi_segments)
+        boundaries_image[~bbox_mask] = 0  # Set background to black
+        plt.imshow(boundaries_image)
+        plt.title('SLIC Boundaries (Region Only)')
+        plt.axis('off')
+
+        plt.subplot(1, 5, 4)
+        plt.imshow(texture_map)
+        plt.title('Texture Map')
+        plt.axis('off')
+        
+        # 🆕 PLOT EXTRACTED BOUNDARIES
+        plt.subplot(1, 5, 5)
+        plt.imshow(bbox_mask, cmap='gray')
+        
+        # Plot each segment boundary
+        colors = plt.cm.Set3(np.linspace(0, 1, len(segment_boundaries)))
+        for j, segment in enumerate(segment_boundaries):
+            coords = np.array(segment['boundary_coords'])
+            if len(coords) > 0:
+                plt.plot(coords[:, 1], coords[:, 0], color=colors[j], linewidth=2, 
+                        label=f'Seg {segment["segment_id"]}')
+        
+        plt.title(f'Extracted Boundaries\n{len(segment_boundaries)} segments')
+        plt.axis('off')
+        plt.legend(loc='upper right', fontsize=8)
+
+        plt.tight_layout()
+        plt.show()
+        
+        """# 🆕 COMPRESS BOUNDARIES USING OUR FOURIER METHOD
+        print(f"  Compressing boundaries with Fourier...")
+        compressed_boundaries = []
+        
+        for j, segment in enumerate(segment_boundaries):
+            if len(segment['boundary_coords']) >= 4:  # Need minimum points for Fourier
+                compressed = compress_irregular_shape(
+                    segment['boundary_coords'],
+                    compression_ratio=0.1,
+                    decimal_places=3
+                )
+                
+                compressed_boundaries.append({
+                    'segment_id': segment['segment_id'],
+                    'compressed_data': compressed,
+                    'original_points': segment['num_points'],
+                    'compressed_coeffs': len(compressed['compressed_coeffs'])
+                })
+                
+                print(f"    Segment {segment['segment_id']}: {segment['num_points']} points → {len(compressed['compressed_coeffs'])} coefficients")
+        
+        # 🆕 SAVE COMPRESSED BOUNDARIES
+        compressed_filename = f"region_{i+1}_compressed_boundaries.npy"
+        np.save(compressed_filename, compressed_boundaries)
+        print(f"  Compressed boundaries saved to: {compressed_filename}")"""
 
 
 
