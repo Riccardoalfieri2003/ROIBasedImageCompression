@@ -1023,6 +1023,287 @@ def visualize_minimal_storage_results(original, compressed, reconstructed, stora
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def save_compressed_matrix(compressed_matrix, filename):
+    """
+    Save the compressed matrix to file
+    """
+    # Save as numpy array (most efficient)
+    np.save(f"{filename}.npy", compressed_matrix)
+    
+    # Also save as CSV for readability
+    np.savetxt(f"{filename}.csv", compressed_matrix, delimiter=",", fmt='%.3f')
+    
+    print(f"✅ Compressed matrix saved:")
+    print(f"   - {filename}.npy ({compressed_matrix.nbytes} bytes)")
+    print(f"   - {filename}.csv (human readable)")
+
+def load_and_reconstruct(filename, original_point_count):
+    """
+    Load compressed matrix and reconstruct full boundary
+    """
+    # Load the compressed matrix
+    compressed_matrix = np.load(f"{filename}.npy")
+    
+    # Reconstruct the full boundary
+    reconstructed_boundary, _ = reconstruct_from_minimal_storage(
+        compressed_matrix, 
+        num_points=original_point_count
+    )
+    
+    print(f"✅ Reconstruction from compressed matrix:")
+    print(f"   - Loaded {len(compressed_matrix)} key points")
+    print(f"   - Reconstructed to {len(reconstructed_boundary)} points")
+    
+    return reconstructed_boundary, compressed_matrix
+
+def analyze_final_storage(original_boundary, compressed_matrix):
+    """
+    Final storage analysis comparing all options
+    """
+    original_size = original_boundary.nbytes
+    compressed_size = compressed_matrix.nbytes
+    
+    print("\n" + "="*60)
+    print("💾 FINAL STORAGE COMPARISON")
+    print("="*60)
+    
+    print(f"{'Representation':<25} {'Points':<10} {'Size':<15} {'Reduction':<15}")
+    print("-" * 65)
+    print(f"{'Original Boundary':<25} {len(original_boundary):<10} {original_size:<15,} {'0%':<15}")
+    print(f"{'Compressed Matrix':<25} {len(compressed_matrix):<10} {compressed_size:<15,} {(1-compressed_size/original_size)*100:<14.1f}%")
+    
+    # Calculate bits per point
+    original_bpp = (original_size * 8) / len(original_boundary)
+    compressed_bpp = (compressed_size * 8) / len(original_boundary)
+    
+    print(f"\n📈 Efficiency Metrics:")
+    print(f"  - Original: {original_bpp:.1f} bits per point")
+    print(f"  - Compressed: {compressed_bpp:.1f} bits per point")
+    print(f"  - Efficiency: {original_bpp/compressed_bpp:.1f}x more efficient")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def visualize_reconstruction_comparison(original, compressed, reconstructed):
+    """
+    Simple side-by-side visualization
+    """
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
+    
+    # Plot 1: Original vs Compressed Points
+    ax1.plot(original[:, 0], original[:, 1], 'b-', alpha=0.7, linewidth=2, label='Original Boundary')
+    ax1.plot(compressed[:, 0], compressed[:, 1], 'ro', markersize=4, label='Compressed Points')
+    ax1.set_title(f'Compression: {len(original)} → {len(compressed)} points')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.set_aspect('equal')
+    
+    # Plot 2: Original vs Reconstructed
+    ax2.plot(original[:, 0], original[:, 1], 'b-', alpha=0.7, linewidth=2, label='Original')
+    ax2.plot(reconstructed[:, 0], reconstructed[:, 1], 'g--', alpha=0.8, linewidth=2, label='Reconstructed')
+    ax2.set_title('Original vs Reconstructed')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_aspect('equal')
+    
+    # Plot 3: Error Visualization
+    error = np.sqrt((reconstructed[:, 0] - original[:, 0])**2 + 
+                   (reconstructed[:, 1] - original[:, 1])**2)
+    ax3.plot(error, 'r-', alpha=0.7)
+    ax3.axhline(y=np.mean(error), color='blue', linestyle='--', 
+                label=f'Mean Error: {np.mean(error):.6f}')
+    ax3.set_title('Reconstruction Error per Point')
+    ax3.set_xlabel('Point Index')
+    ax3.set_ylabel('Error')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print error statistics
+    print(f"📊 Reconstruction Quality:")
+    print(f"   Mean Error: {np.mean(error):.6f}")
+    print(f"   Max Error: {np.max(error):.6f}")
+    print(f"   Std Error: {np.std(error):.6f}")
+
+def visualize_interactive_comparison(original, compressed, reconstructed):
+    """
+    Interactive visualization with zoom capability
+    """
+    from matplotlib.widgets import Slider
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+    
+    # Plot 1: Full view
+    ax1.plot(original[:, 0], original[:, 1], 'b-', linewidth=2, label='Original')
+    ax1.plot(reconstructed[:, 0], reconstructed[:, 1], 'g--', linewidth=1, label='Reconstructed')
+    ax1.plot(compressed[:, 0], compressed[:, 1], 'ro', markersize=3, label='Key Points')
+    ax1.set_title('Full Boundary - Original vs Reconstructed')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.set_aspect('equal')
+    
+    # Plot 2: Zoomed view
+    zoom_factor = 0.1  # Show 10% of the boundary
+    zoom_start = int(len(original) * 0.5)  # Start from middle
+    zoom_end = int(zoom_start + len(original) * zoom_factor)
+    
+    ax2.plot(original[zoom_start:zoom_end, 0], original[zoom_start:zoom_end, 1], 
+             'b-', linewidth=3, label='Original')
+    ax2.plot(reconstructed[zoom_start:zoom_end, 0], reconstructed[zoom_start:zoom_end, 1], 
+             'g--', linewidth=2, label='Reconstructed')
+    ax2.plot(compressed[:, 0], compressed[:, 1], 'ro', markersize=4, alpha=0.5, label='Key Points')
+    ax2.set_title(f'Zoomed View (points {zoom_start}-{zoom_end})')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_aspect('equal')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def visualize_reconstruction_overlay(original, compressed, reconstructed):
+    """
+    Overlay visualization showing all three together
+    """
+    plt.figure(figsize=(12, 10))
+    
+    # Plot original boundary
+    plt.plot(original[:, 0], original[:, 1], 'b-', linewidth=3, alpha=0.5, label='Original Boundary')
+    
+    # Plot compressed points
+    plt.plot(compressed[:, 0], compressed[:, 1], 'ro', markersize=6, label=f'Compressed Points ({len(compressed)})')
+    
+    # Plot reconstructed boundary
+    plt.plot(reconstructed[:, 0], reconstructed[:, 1], 'g--', linewidth=2, alpha=0.8, label='Reconstructed')
+    
+    plt.title(f'Boundary Reconstruction\n{len(original)} points → {len(compressed)} points → {len(reconstructed)} points', fontsize=14)
+    plt.legend(fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.axis('equal')
+    plt.tight_layout()
+    plt.show()
+
+def visualize_quality_metrics(original, reconstructed):
+    """
+    Detailed quality metrics visualization
+    """
+    # Calculate errors
+    errors = np.sqrt((reconstructed[:, 0] - original[:, 0])**2 + 
+                    (reconstructed[:, 1] - original[:, 1])**2)
+    
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+    
+    # 1. Error distribution
+    ax1.hist(errors, bins=50, alpha=0.7, color='red', edgecolor='black')
+    ax1.axvline(np.mean(errors), color='blue', linestyle='--', linewidth=2, 
+                label=f'Mean: {np.mean(errors):.6f}')
+    ax1.set_xlabel('Error')
+    ax1.set_ylabel('Frequency')
+    ax1.set_title('Error Distribution')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # 2. Cumulative error
+    cumulative_error = np.cumsum(errors)
+    ax2.plot(cumulative_error, 'purple', linewidth=2)
+    ax2.set_xlabel('Point Index')
+    ax2.set_ylabel('Cumulative Error')
+    ax2.set_title('Cumulative Reconstruction Error')
+    ax2.grid(True, alpha=0.3)
+    
+    # 3. Error along boundary
+    ax3.plot(errors, 'orange', linewidth=1)
+    ax3.axhline(y=np.mean(errors), color='red', linestyle='--', 
+                label=f'Mean: {np.mean(errors):.6f}')
+    ax3.set_xlabel('Point Index along Boundary')
+    ax3.set_ylabel('Error')
+    ax3.set_title('Error Along Boundary')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    # 4. Quality summary
+    metrics = {
+        'Mean Error': f'{np.mean(errors):.6f}',
+        'Max Error': f'{np.max(errors):.6f}',
+        'Std Dev': f'{np.std(errors):.6f}',
+        '95th Percentile': f'{np.percentile(errors, 95):.6f}',
+        'Points > 0.001': f'{np.sum(errors > 0.001):,}',
+        'Compression Ratio': f'{len(reconstructed)/len(original):.1%}'
+    }
+    
+    ax4.axis('off')
+    text_str = '\n'.join([f'{k}: {v}' for k, v in metrics.items()])
+    ax4.text(0.1, 0.9, text_str, transform=ax4.transAxes, fontsize=12,
+             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    ax4.set_title('Quality Metrics Summary')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # MAIN EXECUTION - TEST WITH YOUR DATA
 if __name__ == "__main__":
     # Your sample coordinates (replace with your actual problematic data)
@@ -1427,7 +1708,45 @@ if __name__ == "__main__":
             reconstructed_boundary, 
             storage_info
         )
+
+
+
+        compressed_matrix=compressed_data
+
+        original_boundary = result['combined_reconstructed']
+        
+        # Save the matrix
+        save_compressed_matrix(compressed_matrix, "compressed_boundary")
+        
+        # Demonstrate reconstruction
+        reconstructed, loaded_matrix = load_and_reconstruct("compressed_boundary", storage_info['original_points'])
+        
+        # Final analysis
+        analyze_final_storage(result['combined_reconstructed'], compressed_matrix)
+
+        # Ensure same length for comparison
+        min_length = min(len(original_boundary), len(reconstructed))
+        original_boundary = original_boundary[:min_length]
+        reconstructed = reconstructed[:min_length]
+        
+        # Show all visualizations
+        visualize_reconstruction_comparison(original_boundary, compressed_matrix, reconstructed)
+        visualize_reconstruction_overlay(original_boundary, compressed_matrix, reconstructed)
+        visualize_quality_metrics(original_boundary, reconstructed)
+
     
 
     else:
         print("❌ Compression failed!")
+
+
+
+
+
+
+
+
+
+
+
+
