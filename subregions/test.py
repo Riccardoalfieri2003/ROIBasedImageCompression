@@ -774,10 +774,8 @@ def quantize_dct_block_proper(dct_block, quality):
     return quantized
 
 
-def get_quantization_table(quality):
-    """
-    Get quantization table for given quality
-    """
+"""def get_quantization_table(quality):
+
     # Standard JPEG luminance quantization table
     base_table = np.array([
         [16, 11, 10, 16, 24, 40, 51, 61],
@@ -798,6 +796,7 @@ def get_quantization_table(quality):
     
     return np.maximum(1, (base_table * scale + 50) / 100)
 
+"""
 
 
 
@@ -810,14 +809,60 @@ def get_quantization_table(quality):
 
 
 
+def calculate_real_compressed_size(compressed_channels):
+    """
+    Calculate REAL compressed size (what would be stored in a file)
+    """
+    if compressed_channels is None:
+        return 0
+    
+    total_size = 0
+    
+    for channel_idx in range(3):
+        if channel_idx in compressed_channels:
+            channel_info = compressed_channels[channel_idx]
+            
+            # 1. Quantization table (8x8 float32)
+            if 'quantization_table' in channel_info:
+                total_size += channel_info['quantization_table'].nbytes
+            
+            # 2. Original brightness (1 float32)
+            if 'original_brightness' in channel_info:
+                total_size += 4  # 4 bytes for float32
+            
+            # 3. Block positions (list of tuples - 2 ints each)
+            if 'block_positions' in channel_info:
+                total_size += len(channel_info['block_positions']) * 8  # 2 * 4 bytes
+            
+            # 4. Compressed blocks (THIS IS THE MAIN PART)
+            if 'compressed_blocks' in channel_info:
+                for block in channel_info['compressed_blocks']:
+                    # In real compression, these would be entropy coded
+                    # For estimation, count them as int16
+                    total_size += len(block) * 2  # 2 bytes per coefficient
+    
+    # Add overhead for data structure (headers, etc.)
+    total_size += 100  # Approximate overhead
+    
+    return total_size
 
-
-
-
-
-
-
-
+def calculate_compression_statistics(compressed_channels, original_size_bytes):
+    """
+    Calculate REAL compression statistics
+    """
+    if compressed_channels is None:
+        return 0, 0, 1.0
+    
+    # Calculate REAL compressed size
+    compressed_size_bytes = calculate_real_compressed_size(compressed_channels)
+    
+    # Calculate compression ratio
+    if compressed_size_bytes > 0:
+        compression_ratio = original_size_bytes / compressed_size_bytes
+    else:
+        compression_ratio = 1.0
+    
+    return compressed_size_bytes, original_size_bytes, compression_ratio
 
 
 
@@ -1066,10 +1111,8 @@ def decompress_segment_from_dct_improved(compressed_data, segment_mask, quality=
 
 
 
-def compress_segment_with_dct_fixed(segment_mask, region_image, quality=95):
-    """
-    Fixed DCT compression with proper brightness handling
-    """
+"""def compress_segment_with_dct_fixed(segment_mask, region_image, quality=95):
+ 
     rows, cols = np.where(segment_mask)
     if len(rows) == 0:
         return None, None
@@ -1137,11 +1180,9 @@ def compress_segment_with_dct_fixed(segment_mask, region_image, quality=95):
         }
     
     return compressed_channels, {'original_means': original_means}
+"""
+"""def quantize_ultra_gentle(dct_block, quality):
 
-def quantize_ultra_gentle(dct_block, quality):
-    """
-    Ultra-gentle quantization - preserve almost all detail
-    """
     block_size = dct_block.shape[0]
     
     # Create extremely gentle quantization table
@@ -1173,7 +1214,51 @@ def quantize_ultra_gentle(dct_block, quality):
     
     quantized = dct_block / quant_table
     return quantized
+"""
 
+def quantize_ultra_gentle(dct_block, quality):
+    """
+    CORRECT quantization - higher quality = smaller quantization values
+    """
+    block_size = dct_block.shape[0]
+    
+    # Standard JPEG quantization table (8x8)
+    if block_size == 8:
+        std_table = np.array([
+            [16, 11, 10, 16, 24, 40, 51, 61],
+            [12, 12, 14, 19, 26, 58, 60, 55],
+            [14, 13, 16, 24, 40, 57, 69, 56],
+            [14, 17, 22, 29, 51, 87, 80, 62],
+            [18, 22, 37, 56, 68, 109, 103, 77],
+            [24, 35, 55, 64, 81, 104, 113, 92],
+            [49, 64, 78, 87, 103, 121, 120, 101],
+            [72, 92, 95, 98, 112, 100, 103, 99]
+        ], dtype=np.float32)
+    else:  # 4x4 - scaled down version
+        std_table = np.array([
+            [8, 6, 5, 8],
+            [6, 6, 7, 10],
+            [7, 7, 8, 12],
+            [9, 11, 14, 16]
+        ], dtype=np.float32)
+    
+    # Quality scaling (0-100 to 0.01-2.0 scale)
+    if quality >= 50:
+        scale_factor = (100 - quality) / 50.0
+    else:
+        scale_factor = 50.0 / quality
+    
+    # Adjust quantization table based on quality
+    quant_table = std_table * scale_factor
+    quant_table = np.clip(quant_table, 1, 255)  # Never go below 1
+    
+    # For high quality (95), scale_factor ≈ 0.1, so quant_table values get SMALLER
+    # For low quality (10), scale_factor ≈ 5.0, so quant_table values get LARGER
+    
+    # Quantize (this is where compression happens)
+    quantized = np.round(dct_block / quant_table)
+    
+    return quantized
 
 def get_quantization_table_fixed(quality, block_size):
     """
@@ -1501,6 +1586,1043 @@ def decompress_segment_efficient(compressed_data, segment_mask, quality=75):
 
 
 
+import numpy as np
+import scipy.fft
+
+def compress_segment_simple_dct(segment_mask, region_image, quality=50):
+    """
+    SIMPLE, WORKING DCT compression with proper brightness preservation
+    """
+    rows, cols = np.where(segment_mask)
+    if len(rows) == 0:
+        return None, None
+    
+    # Get bounding box
+    min_row, max_row = np.min(rows), np.max(rows)
+    min_col, max_col = np.min(cols), np.max(cols)
+    
+    # Extract segment
+    segment_content = region_image[min_row:max_row+1, min_col:max_col+1].copy()
+    segment_mask_cropped = segment_mask[min_row:max_row+1, min_col:max_col+1]
+    
+    # Convert to float (0-1 range)
+    segment_float = segment_content.astype(np.float32) / 255.0
+    
+    # Store original brightness
+    original_brightness = []
+    for c in range(3):
+        channel_data = segment_float[:, :, c]
+        mask_area = channel_data[segment_mask_cropped]
+        if len(mask_area) > 0:
+            original_brightness.append(np.mean(mask_area))
+        else:
+            original_brightness.append(0.5)  # Default
+    
+    # Use 8x8 blocks (standard JPEG size)
+    block_size = 8
+    height, width = segment_content.shape[:2]
+    
+    # Pad to multiple of block_size
+    pad_h = (block_size - (height % block_size)) % block_size
+    pad_w = (block_size - (width % block_size)) % block_size
+    
+    compressed_data = {}
+    
+    for channel_idx in range(3):
+        channel = segment_float[:, :, channel_idx]
+        
+        # Pad with edge values, NOT zeros
+        padded = np.pad(channel, ((0, pad_h), (0, pad_w)), mode='edge')
+        h_pad, w_pad = padded.shape
+        
+        # Create empty array for DCT coefficients
+        dct_coeffs = np.zeros_like(padded)
+        
+        # Standard JPEG quantization table (8x8)
+        quant_table = np.array([
+            [16, 11, 10, 16, 24, 40, 51, 61],
+            [12, 12, 14, 19, 26, 58, 60, 55],
+            [14, 13, 16, 24, 40, 57, 69, 56],
+            [14, 17, 22, 29, 51, 87, 80, 62],
+            [18, 22, 37, 56, 68, 109, 103, 77],
+            [24, 35, 55, 64, 81, 104, 113, 92],
+            [49, 64, 78, 87, 103, 121, 120, 101],
+            [72, 92, 95, 98, 112, 100, 103, 99]
+        ], dtype=np.float32)
+        
+        # Adjust quality (50 = standard, 100 = best, 1 = worst)
+        if quality <= 0:
+            quality = 1
+        if quality > 100:
+            quality = 100
+            
+        # Scale factor: quality 50 = scale 1.0, quality 100 = scale 0.01, quality 1 = scale 100
+        if quality >= 50:
+            scale = (100 - quality) / 50.0
+        else:
+            scale = 50.0 / quality
+        
+        # Apply scale (but never let it go below 0.01)
+        scaled_table = quant_table * max(scale, 0.01)
+        
+        # Process each 8x8 block
+        compressed_blocks = []
+        block_positions = []
+        
+        for i in range(0, h_pad, block_size):
+            for j in range(0, w_pad, block_size):
+                block = padded[i:i+block_size, j:j+block_size]
+                
+                # Check if block contains any mask area
+                block_mask_area = segment_mask_cropped[
+                    i:min(i+block_size, height), 
+                    j:min(j+block_size, width)
+                ]
+                
+                if np.any(block_mask_area) and block.shape == (block_size, block_size):
+                    # Apply DCT
+                    dct_block = scipy.fft.dctn(block, norm='ortho')
+                    
+                    # QUANTIZE (divide by numbers ≥ 1)
+                    quantized = np.round(dct_block / scaled_table)
+                    
+                    compressed_blocks.append(quantized.flatten())
+                    block_positions.append((i, j))
+        
+        compressed_data[channel_idx] = {
+            'blocks': compressed_blocks,
+            'positions': block_positions,
+            'quant_table': scaled_table,
+            'original_shape': (h_pad, w_pad),
+            'block_size': block_size,
+            'original_brightness': original_brightness[channel_idx]
+        }
+    
+    return compressed_data, {
+        'original_means': original_brightness,
+        'segment_bbox': (min_row, min_col, height, width),
+        'segment_mask_shape': segment_mask_cropped.shape
+    }
+
+
+def decompress_segment_simple_dct(compressed_data, metadata):
+    """
+    Decompress the DCT-compressed segment
+    """
+    if compressed_data is None:
+        return None
+    
+    height, width = metadata['segment_bbox'][2:]
+    
+    reconstructed = np.zeros((height, width, 3), dtype=np.float32)
+    
+    for channel_idx in range(3):
+        if channel_idx not in compressed_data:
+            continue
+            
+        channel_info = compressed_data[channel_idx]
+        blocks = channel_info['blocks']
+        positions = channel_info['positions']
+        quant_table = channel_info['quant_table']
+        h_pad, w_pad = channel_info['original_shape']
+        block_size = channel_info['block_size']
+        
+        # Create padded reconstruction
+        padded_recon = np.zeros((h_pad, w_pad), dtype=np.float32)
+        
+        for idx, (i, j) in enumerate(positions):
+            if idx < len(blocks):
+                # Reshape flattened block
+                quantized_flat = blocks[idx]
+                quantized_block = quantized_flat.reshape((block_size, block_size))
+                
+                # Dequantize (MULTIPLY by quantization table)
+                dct_block = quantized_block * quant_table
+                
+                # Inverse DCT
+                recon_block = scipy.fft.idctn(dct_block, norm='ortho')
+                
+                # Place in padded reconstruction
+                padded_recon[i:i+block_size, j:j+block_size] = recon_block
+        
+        # Crop to original size
+        channel_recon = padded_recon[:height, :width]
+        
+        # Adjust brightness to match original
+        current_mean = np.mean(channel_recon)
+        target_mean = channel_info['original_brightness']
+        if current_mean > 0:
+            channel_recon = channel_recon * (target_mean / current_mean)
+        
+        # Clip to valid range
+        channel_recon = np.clip(channel_recon, 0, 1)
+        reconstructed[:, :, channel_idx] = channel_recon
+    
+    # Convert back to 0-255 uint8
+    reconstructed_uint8 = (reconstructed * 255).astype(np.uint8)
+    
+    return reconstructed_uint8
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import numpy as np
+import scipy.fft
+import math
+
+"""def compress_segment_with_dct_fixed(segment_mask, region_image, quality=50):
+
+    # Get the coordinates where segment_mask is True
+    rows, cols = np.where(segment_mask)
+    if len(rows) == 0:
+        return None, None
+    
+    # Get bounding box of this segment
+    min_row, max_row = np.min(rows), np.max(rows)
+    min_col, max_col = np.min(cols), np.max(cols)
+    
+    # Extract the segment from the region image
+    segment_content = region_image[min_row:max_row+1, min_col:max_col+1].copy()
+    segment_mask_cropped = segment_mask[min_row:max_row+1, min_col:max_col+1]
+    
+    # Check if we have a valid segment
+    height, width = segment_content.shape[:2]
+    if height == 0 or width == 0:
+        return None, None
+    
+    # Store original brightness for brightness preservation
+    original_brightness = []
+    for c in range(3):
+        channel_data = segment_content[:, :, c]
+        # Get mean brightness only in the masked area
+        mask_area = channel_data[segment_mask_cropped]
+        if len(mask_area) > 0:
+            original_brightness.append(np.mean(mask_area))
+        else:
+            original_brightness.append(128.0)  # Default mid-gray
+    
+    # Convert to float (0-1 range) for DCT
+    segment_float = segment_content.astype(np.float32) / 255.0
+    
+    # Use standard JPEG block size
+    block_size = 8
+    
+    # Pad to multiple of block_size (use edge padding to avoid dark borders)
+    pad_h = (block_size - (height % block_size)) % block_size
+    pad_w = (block_size - (width % block_size)) % block_size
+    
+    compressed_channels = {}
+    
+    for channel_idx in range(3):
+        channel_data = segment_float[:, :, channel_idx]
+        
+        # Pad with edge values (not zeros!)
+        padded_channel = np.pad(channel_data, ((0, pad_h), (0, pad_w)), mode='edge')
+        h_pad, w_pad = padded_channel.shape
+        
+        # Standard JPEG quantization table (8x8)
+        std_quant_table = np.array([
+            [16, 11, 10, 16, 24, 40, 51, 61],
+            [12, 12, 14, 19, 26, 58, 60, 55],
+            [14, 13, 16, 24, 40, 57, 69, 56],
+            [14, 17, 22, 29, 51, 87, 80, 62],
+            [18, 22, 37, 56, 68, 109, 103, 77],
+            [24, 35, 55, 64, 81, 104, 113, 92],
+            [49, 64, 78, 87, 103, 121, 120, 101],
+            [72, 92, 95, 98, 112, 100, 103, 99]
+        ], dtype=np.float32)
+        
+        # Adjust quantization table based on quality (0-100)
+        # quality=50 uses standard table, quality=100 uses gentle table, quality=1 uses aggressive table
+        if quality <= 0:
+            quality = 1
+        if quality > 100:
+            quality = 100
+            
+        # Calculate scale factor
+        if quality >= 50:
+            scale_factor = (100 - quality) / 50.0  # 50→1.0, 75→0.5, 100→0.0
+        else:
+            scale_factor = 50.0 / quality  # 25→2.0, 10→5.0, 1→50.0
+        
+        # Apply scale but keep minimum of 0.01
+        scale_factor = max(scale_factor, 0.01)
+        quant_table = std_quant_table * scale_factor
+        
+        # Process each 8x8 block
+        compressed_blocks = []
+        block_positions = []
+        
+        for i in range(0, h_pad, block_size):
+            for j in range(0, w_pad, block_size):
+                block = padded_channel[i:i+block_size, j:j+block_size]
+                
+                # Check if this block contains any of our segment mask
+                # We need to check the corresponding area in the original mask
+                block_mask_area = segment_mask_cropped[
+                    i:min(i+block_size, height), 
+                    j:min(j+block_size, width)
+                ]
+                
+                if np.any(block_mask_area) and block.shape == (block_size, block_size):
+                    # Apply DCT
+                    dct_block = scipy.fft.dctn(block, norm='ortho')
+                    
+                    # QUANTIZE (divide by numbers ≥ 1)
+                    quantized_block = np.round(dct_block / quant_table)
+                    
+                    compressed_blocks.append(quantized_block.flatten())
+                    block_positions.append((i, j))
+        
+        # Store compressed data for this channel
+        compressed_channels[channel_idx] = {
+            'compressed_blocks': compressed_blocks,
+            'block_positions': block_positions,
+            'quantization_table': quant_table,
+            'padded_shape': (h_pad, w_pad),
+            'block_size': block_size,
+            'original_brightness': original_brightness[channel_idx]
+        }
+    
+    # Metadata for reconstruction
+    metadata = {
+        'original_means': original_brightness,
+        'segment_bbox': (min_row, min_col, height, width),
+        'segment_mask_shape': segment_mask_cropped.shape,
+        'padding': (pad_h, pad_w)
+    }
+    
+    return compressed_channels, metadata
+"""
+
+def decompress_segment_dct(compressed_channels, metadata, original_region_shape):
+    """
+    Decompress a DCT-compressed segment
+    Returns the reconstructed segment in its original position within the region
+    """
+    if compressed_channels is None:
+        return None
+    
+    # Get the original segment's bounding box and shape
+    min_row, min_col, height, width = metadata['segment_bbox']
+    
+    # Initialize reconstruction at the correct size
+    reconstructed = np.zeros((height, width, 3), dtype=np.float32)
+    
+    for channel_idx in range(3):
+        if channel_idx not in compressed_channels:
+            continue
+            
+        channel_info = compressed_channels[channel_idx]
+        blocks = channel_info['compressed_blocks']
+        positions = channel_info['block_positions']
+        quant_table = channel_info['quantization_table']
+        h_pad, w_pad = channel_info['padded_shape']
+        block_size = channel_info['block_size']
+        target_brightness = channel_info['original_brightness']
+        
+        # Create padded reconstruction space
+        padded_recon = np.zeros((h_pad, w_pad), dtype=np.float32)
+        
+        for block_idx, (i, j) in enumerate(positions):
+            if block_idx < len(blocks):
+                # Get the quantized block data
+                quantized_flat = blocks[block_idx]
+                quantized_block = quantized_flat.reshape((block_size, block_size))
+                
+                # DEQUANTIZE (multiply by quantization table)
+                dct_block = quantized_block * quant_table
+                
+                # Inverse DCT
+                recon_block = scipy.fft.idctn(dct_block, norm='ortho')
+                
+                # Place in padded reconstruction
+                if i + block_size <= h_pad and j + block_size <= w_pad:
+                    padded_recon[i:i+block_size, j:j+block_size] = recon_block
+        
+        # Crop to original size
+        channel_recon = padded_recon[:height, :width]
+        
+        # Simple brightness adjustment (optional)
+        # You can comment this out if it causes issues
+        current_mean = np.mean(channel_recon)
+        if current_mean > 0 and target_brightness > 0:
+            # target_brightness is stored as 0-255 range, convert to 0-1
+            target_norm = target_brightness / 255.0
+            channel_recon = channel_recon * (target_norm / current_mean)
+        
+        # Clip to valid range
+        channel_recon = np.clip(channel_recon, 0, 1)
+        reconstructed[:, :, channel_idx] = channel_recon
+    
+    # Convert back to 0-255 uint8
+    reconstructed_uint8 = (reconstructed * 255).astype(np.uint8)
+    
+    return reconstructed_uint8
+
+
+def calculate_psnr_for_segment(original_region, recon_segment, segment_mask, segment_bbox):
+    """
+    Calculate PSNR for a specific segment
+    """
+    min_row, min_col, height, width = segment_bbox
+    
+    # Extract the segment area from original region
+    original_segment = original_region[min_row:min_row+height, min_col:min_col+width]
+    
+    # Get mask for just this segment area
+    segment_mask_cropped = segment_mask[min_row:min_row+height, min_col:min_col+width]
+    
+    # Get pixels from both images
+    original_pixels = original_segment[segment_mask_cropped]
+    recon_pixels = recon_segment[segment_mask_cropped]
+    
+    if len(original_pixels) == 0 or len(recon_pixels) == 0:
+        return 0
+    
+    # Calculate MSE and PSNR
+    mse = np.mean((original_pixels - recon_pixels) ** 2)
+    if mse > 0:
+        psnr = 10 * np.log10(255**2 / mse)
+    else:
+        psnr = float('inf')
+    
+    return psnr
+
+
+"""def calculate_compression_statistics(compressed_channels, original_size_bytes):
+
+    if compressed_channels is None:
+        return 0, 0, 1.0
+    
+    compressed_size_bytes = 0
+    original_pixels = 0
+    
+    for channel_idx in range(3):
+        if channel_idx in compressed_channels:
+            blocks = compressed_channels[channel_idx]['compressed_blocks']
+            for block in blocks:
+                compressed_size_bytes += block.nbytes
+    
+    # Calculate compression ratio
+    if compressed_size_bytes > 0:
+        compression_ratio = original_size_bytes / compressed_size_bytes
+    else:
+        compression_ratio = 1.0
+    
+    return compressed_size_bytes, original_size_bytes, compression_ratio
+"""
+
+
+
+import matplotlib.pyplot as plt
+
+def visualize_roi_comparison(original_region, reconstructed_region, segment_masks, 
+                            region_idx, quality, overall_ratio, avg_psnr):
+    """
+    Visualize comparison between original and reconstructed ROI
+    """
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle(f'Region {region_idx} - Quality: {quality} - Compression Ratio: {overall_ratio:.2f}:1 - Avg PSNR: {avg_psnr:.2f} dB', 
+                 fontsize=14, fontweight='bold')
+    
+    # 1. Original ROI
+    axes[0, 0].imshow(original_region)
+    axes[0, 0].set_title('Original ROI Region')
+    axes[0, 0].axis('off')
+    
+    # 2. Reconstructed ROI
+    axes[0, 1].imshow(reconstructed_region)
+    axes[0, 1].set_title('Reconstructed ROI Region')
+    axes[0, 1].axis('off')
+    
+    # 3. Difference (error) image
+    if original_region.shape == reconstructed_region.shape:
+        diff = np.abs(original_region.astype(np.float32) - reconstructed_region.astype(np.float32))
+        diff_normalized = (diff / 255.0) * 255
+        axes[0, 2].imshow(diff_normalized.astype(np.uint8), cmap='hot')
+        axes[0, 2].set_title(f'Difference (Max error: {np.max(diff):.1f})')
+        axes[0, 2].axis('off')
+    
+    # 4. Original with segment boundaries
+    axes[1, 0].imshow(original_region)
+    if segment_masks and len(segment_masks) > 0:
+        # Create overlay of segment boundaries
+        boundaries = np.zeros(original_region.shape[:2], dtype=bool)
+        for mask in segment_masks:
+            # Find edges of each segment
+            from scipy import ndimage
+            eroded = ndimage.binary_erosion(mask, structure=np.ones((3,3)))
+            boundary = mask & ~eroded
+            boundaries = boundaries | boundary
+        
+        # Plot boundaries in red
+        y_coords, x_coords = np.where(boundaries)
+        axes[1, 0].scatter(x_coords, y_coords, s=1, c='red', alpha=0.6)
+    axes[1, 0].set_title(f'Original with {len(segment_masks)} segments')
+    axes[1, 0].axis('off')
+    
+    # 5. Close-up comparison (center crop)
+    h, w = original_region.shape[:2]
+    crop_size = min(100, h//3, w//3)
+    center_y, center_x = h//2, w//2
+    
+    if crop_size > 0:
+        crop_y1 = max(0, center_y - crop_size//2)
+        crop_y2 = min(h, center_y + crop_size//2)
+        crop_x1 = max(0, center_x - crop_size//2)
+        crop_x2 = min(w, center_x + crop_size//2)
+        
+        original_crop = original_region[crop_y1:crop_y2, crop_x1:crop_x2]
+        recon_crop = reconstructed_region[crop_y1:crop_y2, crop_x1:crop_x2]
+        
+        # Create side-by-side comparison
+        comparison = np.hstack([original_crop, recon_crop])
+        axes[1, 1].imshow(comparison)
+        axes[1, 1].set_title(f'Close-up Comparison ({crop_size}x{crop_size})')
+        axes[1, 1].axis('off')
+        
+        # Add dividing line
+        divider_x = original_crop.shape[1]
+        axes[1, 1].axvline(x=divider_x, color='white', linewidth=2)
+        axes[1, 1].text(divider_x//2, -10, 'Original', ha='center', color='white', 
+                       fontweight='bold', backgroundcolor='black')
+        axes[1, 1].text(divider_x + original_crop.shape[1]//2, -10, 'Reconstructed', 
+                       ha='center', color='white', fontweight='bold', backgroundcolor='black')
+    
+    """# 6. PSNR histogram for segments
+    if 'segment_psnrs' in locals():
+        axes[1, 2].hist(segment_psnrs, bins=20, alpha=0.7, color='blue', edgecolor='black')
+        axes[1, 2].axvline(avg_psnr, color='red', linestyle='--', linewidth=2, label=f'Avg: {avg_psnr:.2f} dB')
+        axes[1, 2].set_xlabel('PSNR (dB)')
+        axes[1, 2].set_ylabel('Number of Segments')
+        axes[1, 2].set_title('Segment Quality Distribution')
+        axes[1, 2].legend()
+        axes[1, 2].grid(True, alpha=0.3)"""
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Also show single segment comparison if available
+    if segment_masks and len(segment_masks) > 0:
+        show_single_segment_comparison(original_region, reconstructed_region, segment_masks[0])
+
+def show_single_segment_comparison(original_region, reconstructed_region, segment_mask):
+    """
+    Show detailed comparison for a single segment
+    """
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    
+    # Get bounding box of the segment
+    rows, cols = np.where(segment_mask)
+    if len(rows) == 0:
+        return
+    
+    min_row, max_row = np.min(rows), np.max(rows)
+    min_col, max_col = np.min(cols), np.max(cols)
+    height = max_row - min_row + 1
+    width = max_col - min_col + 1
+    
+    # Extract the segment from both images
+    orig_segment = original_region[min_row:max_row+1, min_col:max_col+1]
+    recon_segment = reconstructed_region[min_row:max_row+1, min_col:max_col+1]
+    
+    # Mask for just this segment
+    segment_mask_cropped = segment_mask[min_row:max_row+1, min_col:max_col+1]
+    
+    # 1. Original segment
+    axes[0].imshow(orig_segment)
+    axes[0].set_title(f'Original Segment\n{height}x{width} pixels')
+    axes[0].axis('off')
+    
+    # 2. Reconstructed segment
+    axes[1].imshow(recon_segment)
+    axes[1].set_title('Reconstructed Segment')
+    axes[1].axis('off')
+    
+    # 3. Difference with mask overlay
+    if orig_segment.shape == recon_segment.shape:
+        diff = np.abs(orig_segment.astype(np.float32) - recon_segment.astype(np.float32))
+        diff_rgb = np.zeros_like(orig_segment, dtype=np.uint8)
+        
+        # Create red overlay for errors
+        for c in range(3):
+            diff_channel = diff[:, :, c]
+            # Normalize to 0-255
+            if np.max(diff_channel) > 0:
+                diff_channel = (diff_channel / np.max(diff_channel)) * 255
+            
+            # Create overlay: error in red channel, original in green/blue
+            diff_rgb[:, :, 0] = np.minimum(255, diff_channel).astype(np.uint8)
+            diff_rgb[:, :, 1] = orig_segment[:, :, 1]
+            diff_rgb[:, :, 2] = orig_segment[:, :, 2]
+        
+        axes[2].imshow(diff_rgb)
+        axes[2].set_title(f'Error Overlay (Red=error)\nMax error: {np.max(diff):.1f}')
+        axes[2].axis('off')
+    
+    # 4. Segment mask
+    mask_display = np.zeros((height, width, 3), dtype=np.uint8)
+    mask_display[segment_mask_cropped] = [255, 255, 255]  # White for mask
+    mask_display[~segment_mask_cropped] = [0, 0, 0]       # Black for non-mask
+    
+    axes[3].imshow(mask_display)
+    axes[3].set_title(f'Segment Mask\n{np.sum(segment_mask_cropped)} pixels')
+    axes[3].axis('off')
+    
+    plt.suptitle(f'Single Segment Detail View', fontsize=12, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def get_quantization_table_simple(quality, block_size=8):
+    """
+    SIMPLE quantization that GUARANTEES non-zero coefficients
+    """
+    if block_size == 8:
+        # GENTLE table for small segments
+        quant_table = np.array([
+            [0.1, 0.1, 0.2, 0.3, 0.5, 1.0, 2.0, 4.0],
+            [0.1, 0.1, 0.2, 0.3, 0.5, 1.0, 2.0, 4.0],
+            [0.2, 0.2, 0.3, 0.5, 1.0, 2.0, 4.0, 8.0],
+            [0.3, 0.3, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0],
+            [0.5, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
+            [1.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0],
+            [2.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0],
+            [4.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0]
+        ], dtype=np.float32)
+    else:  # 4x4
+        quant_table = np.array([
+            [0.1, 0.1, 0.2, 0.5],
+            [0.1, 0.1, 0.2, 0.5],
+            [0.2, 0.2, 0.5, 1.0],
+            [0.5, 0.5, 1.0, 2.0]
+        ], dtype=np.float32)
+    
+    # Quality adjustment (minimal)
+    if quality > 80:
+        # Almost no additional scaling
+        scale = 0.8
+    elif quality > 60:
+        scale = 1.0
+    elif quality > 40:
+        scale = 1.2
+    elif quality > 20:
+        scale = 1.5
+    else:
+        scale = 2.0
+    
+    quant_table = quant_table * scale
+    
+    print(f"    [QUANT] quality={quality}, scale={scale}, "
+          f"DC={quant_table[0,0]:.3f}, max={np.max(quant_table):.1f}")
+    
+    return quant_table
+
+
+def compress_segment_guaranteed_working(segment_mask, region_image, quality=75):
+    """
+    DCT compression that GUARANTEES non-black output
+    """
+    rows, cols = np.where(segment_mask)
+    if len(rows) == 0:
+        return None, None
+    
+    # Get bounding box
+    min_row, max_row = np.min(rows), np.max(rows)
+    min_col, max_col = np.min(cols), np.max(cols)
+    height = max_row - min_row + 1
+    width = max_col - min_col + 1
+    
+    print(f"    [INFO] Segment: {width}x{height} pixels")
+    
+    # Extract segment
+    segment_content = region_image[min_row:max_row+1, min_col:max_col+1].copy()
+    segment_mask_cropped = segment_mask[min_row:max_row+1, min_col:max_col+1]
+    
+    # Store original brightness
+    original_brightness = []
+    for c in range(3):
+        channel_data = segment_content[:, :, c]
+        mask_area = channel_data[segment_mask_cropped]
+        if len(mask_area) > 0:
+            original_brightness.append(np.mean(mask_area))
+        else:
+            original_brightness.append(128.0)
+    
+    print(f"    [INFO] Brightness: R={original_brightness[0]:.1f}, "
+          f"G={original_brightness[1]:.1f}, B={original_brightness[2]:.1f}")
+    
+    # Convert to float (0-1)
+    segment_float = segment_content.astype(np.float32) / 255.0
+    
+    # Force 4x4 blocks for small segments
+    if width < 16 or height < 16:
+        block_size = 4
+        print(f"    [INFO] Using 4x4 blocks (segment too small for 8x8)")
+    else:
+        block_size = 8
+    
+    # Pad
+    pad_h = (block_size - (height % block_size)) % block_size
+    pad_w = (block_size - (width % block_size)) % block_size
+    
+    compressed_channels = {}
+    
+    for channel_idx in range(3):
+        channel_data = segment_float[:, :, channel_idx]
+        
+        # Check range
+        mask_values = channel_data[segment_mask_cropped]
+        if len(mask_values) > 0:
+            ch_min, ch_max = np.min(mask_values), np.max(mask_values)
+            print(f"    [CH{channel_idx}] Range: [{ch_min:.3f}, {ch_max:.3f}]")
+        
+        # Pad
+        padded = np.pad(channel_data, ((0, pad_h), (0, pad_w)), mode='edge')
+        
+        # Get GENTLE quantization table
+        quant_table = get_quantization_table_simple(quality, block_size)
+        
+        # Process blocks
+        compressed_blocks = []
+        block_positions = []
+        
+        for i in range(0, padded.shape[0], block_size):
+            for j in range(0, padded.shape[1], block_size):
+                block = padded[i:i+block_size, j:j+block_size]
+                
+                # Check if block contains mask
+                block_mask_area = segment_mask_cropped[
+                    i:min(i+block_size, height), 
+                    j:min(j+block_size, width)
+                ]
+                
+                if np.any(block_mask_area) and block.shape == (block_size, block_size):
+                    # Apply DCT
+                    dct_block = scipy.fft.dctn(block, norm='ortho')
+                    
+                    # DEBUG: Print DC coefficient (brightness)
+                    dc_value = dct_block[0, 0]
+                    
+                    # GENTLE quantization
+                    quantized_block = np.round(dct_block / quant_table)
+                    
+                    # FORCE DC coefficient to be non-zero
+                    if quantized_block[0, 0] == 0 and dc_value != 0:
+                        print(f"    [WARN] Channel {channel_idx} block ({i},{j}): "
+                              f"DC={dc_value:.3f} was quantized to 0! Keeping as 1.")
+                        quantized_block[0, 0] = 1 if dc_value > 0 else -1
+                    
+                    # Count non-zero
+                    non_zero = np.sum(quantized_block != 0)
+                    if non_zero == 0:
+                        print(f"    [ERROR] All zeros in block! Adding DC=1")
+                        quantized_block[0, 0] = 1
+                    
+                    # Store
+                    compressed_blocks.append(quantized_block.astype(np.int16).flatten())
+                    block_positions.append((i, j))
+        
+        if compressed_blocks:
+            compressed_channels[channel_idx] = {
+                'compressed_blocks': compressed_blocks,
+                'block_positions': block_positions,
+                'quantization_table': quant_table,
+                'padded_shape': padded.shape,
+                'block_size': block_size,
+                'original_brightness': original_brightness[channel_idx]
+            }
+    
+    if not compressed_channels:
+        return None, None
+    
+    metadata = {
+        'original_means': original_brightness,
+        'segment_bbox': (min_row, min_col, height, width),
+        'segment_mask_shape': segment_mask_cropped.shape,
+        'padding': (pad_h, pad_w),
+        'block_size': block_size
+    }
+    
+    return compressed_channels, metadata
+
+
+def compress_segment_with_dct_fixed(segment_mask, region_image, quality=50):
+    """
+    FIXED DCT compression with DEBUG output
+    """
+    rows, cols = np.where(segment_mask)
+    if len(rows) == 0:
+        return None, None
+    
+    # Get bounding box
+    min_row, max_row = np.min(rows), np.max(rows)
+    min_col, max_col = np.min(cols), np.max(cols)
+    height = max_row - min_row + 1
+    width = max_col - min_col + 1
+    
+    print(f"    Segment size: {width}x{height} pixels")
+    
+    # Extract segment
+    segment_content = region_image[min_row:max_row+1, min_col:max_col+1].copy()
+    segment_mask_cropped = segment_mask[min_row:max_row+1, min_col:max_col+1]
+    
+    # Store original brightness
+    original_brightness = []
+    for c in range(3):
+        channel_data = segment_content[:, :, c]
+        mask_area = channel_data[segment_mask_cropped]
+        if len(mask_area) > 0:
+            original_brightness.append(np.mean(mask_area))
+        else:
+            original_brightness.append(128.0)
+    
+    print(f"    Original brightness: R={original_brightness[0]:.1f}, "
+          f"G={original_brightness[1]:.1f}, B={original_brightness[2]:.1f}")
+    
+    # Convert to float (0-1)
+    segment_float = segment_content.astype(np.float32) / 255.0
+    
+    # Use block size based on segment size
+    if min(height, width) < 16:
+        block_size = 4
+    else:
+        block_size = 8
+    
+    print(f"    Using block size: {block_size}x{block_size}")
+    
+    # Pad to multiple of block_size
+    pad_h = (block_size - (height % block_size)) % block_size
+    pad_w = (block_size - (width % block_size)) % block_size
+    
+    compressed_channels = {}
+    total_non_zero = 0
+    total_coeffs = 0
+    
+    for channel_idx in range(3):
+        channel_data = segment_float[:, :, channel_idx]
+        
+        # Check channel range
+        mask_values = channel_data[segment_mask_cropped]
+        if len(mask_values) > 0:
+            print(f"    Channel {channel_idx}: min={np.min(mask_values):.4f}, "
+                  f"max={np.max(mask_values):.4f}, mean={np.mean(mask_values):.4f}")
+        
+        # Pad with edge values
+        padded_channel = np.pad(channel_data, ((0, pad_h), (0, pad_w)), mode='edge')
+        h_pad, w_pad = padded_channel.shape
+        
+        # Get quantization table
+        quant_table = get_quantization_table(quality, block_size)
+        
+        # Process blocks
+        compressed_blocks = []
+        block_positions = []
+        channel_non_zero = 0
+        channel_coeffs = 0
+        
+        for i in range(0, h_pad, block_size):
+            for j in range(0, w_pad, block_size):
+                block = padded_channel[i:i+block_size, j:j+block_size]
+                
+                # Check if block contains mask
+                block_mask_area = segment_mask_cropped[
+                    i:min(i+block_size, height), 
+                    j:min(j+block_size, width)
+                ]
+                
+                if np.any(block_mask_area) and block.shape == (block_size, block_size):
+                    # Apply DCT
+                    dct_block = scipy.fft.dctn(block, norm='ortho')
+                    
+                    # Debug DCT range
+                    dct_min, dct_max = np.min(dct_block), np.max(dct_block)
+                    dct_abs_max = np.max(np.abs(dct_block))
+                    
+                    # Quantize
+                    quantized_block = np.round(dct_block / quant_table)
+                    
+                    # Count non-zero coefficients
+                    non_zero = np.sum(quantized_block != 0)
+                    channel_non_zero += non_zero
+                    channel_coeffs += block_size * block_size
+                    
+                    if non_zero == 0:
+                        print(f"      WARNING: Block ({i},{j}) - ALL coefficients quantized to zero!")
+                        print(f"        DCT range: [{dct_min:.4f}, {dct_max:.4f}], max abs: {dct_abs_max:.4f}")
+                        print(f"        DC coefficient: {dct_block[0,0]:.4f}, "
+                              f"quantized to: {quantized_block[0,0]}")
+                    
+                    # Convert to int16
+                    quantized_block_int16 = quantized_block.astype(np.int16)
+                    
+                    compressed_blocks.append(quantized_block_int16.flatten())
+                    block_positions.append((i, j))
+        
+        if compressed_blocks:
+            compressed_channels[channel_idx] = {
+                'compressed_blocks': compressed_blocks,
+                'block_positions': block_positions,
+                'quantization_table': quant_table,
+                'padded_shape': (h_pad, w_pad),
+                'block_size': block_size,
+                'original_brightness': original_brightness[channel_idx]
+            }
+            
+            print(f"    Channel {channel_idx}: {len(compressed_blocks)} blocks, "
+                  f"{channel_non_zero}/{channel_coeffs} non-zero coefficients "
+                  f"({channel_non_zero/channel_coeffs*100:.1f}%)")
+            
+            total_non_zero += channel_non_zero
+            total_coeffs += channel_coeffs
+    
+    if not compressed_channels:
+        print("    ERROR: No blocks were compressed!")
+        return None, None
+    
+    print(f"    TOTAL: {total_non_zero}/{total_coeffs} non-zero coefficients "
+          f"({total_non_zero/total_coeffs*100:.1f}%)")
+    
+    if total_non_zero == 0:
+        print("    ⚠️ CRITICAL: ALL coefficients are zero! Image will be black!")
+    
+    metadata = {
+        'original_means': original_brightness,
+        'segment_bbox': (min_row, min_col, height, width),
+        'segment_mask_shape': segment_mask_cropped.shape,
+        'padding': (pad_h, pad_w),
+        'block_size': block_size
+    }
+    
+    return compressed_channels, metadata
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 if __name__ == "__main__":
@@ -1508,6 +2630,7 @@ if __name__ == "__main__":
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     enhanced_image_rgb=get_enhanced_image(image_rgb, shadow_threshold=100)
+    #enhanced_image_rgb=image_rgb
 
     print(f"Size: {image_rgb.size}")
     factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
@@ -1761,89 +2884,116 @@ if __name__ == "__main__":
 
 
 
-        """# 🆕 COMPRESS EACH SLIC SEGMENT INDIVIDUALLY
-        print("  Applying DCT compression to SLIC segments...")
-        all_segments_compressed = []
-        total_segments_original = 0
-        total_segments_compressed = 0
-
-        for segment_idx, segment_info in enumerate(segment_boundaries):
-            # Create mask for this specific segment
-            segment_mask = (roi_segments == segment_info['segment_id']) & bbox_mask
-            
-            if np.sum(segment_mask) > 0:  # Only compress non-empty segments
-                compressed_segment, segment_metrics = compress_segment_with_dct(
-                    segment_mask, bbox_region, quality=75
-                )
-                
-                if compressed_segment:
-                    all_segments_compressed.append({
-                        'segment_id': segment_info['segment_id'],
-                        'compressed_data': compressed_segment,
-                        'metrics': segment_metrics,
-                        'boundary_coords': segment_info['boundary_coords']
-                    })
-                    
-                    # Accumulate metrics
-                    for channel_metrics in segment_metrics.values():
-                        total_segments_original += channel_metrics['original_size']
-                        total_segments_compressed += channel_metrics['compressed_size']
-
-        # Print segment compression results
-        if total_segments_original > 0:
-            overall_ratio = total_segments_compressed / total_segments_original
-            print(f"    Segments compression: {total_segments_original:,} → {total_segments_compressed:,} bytes ({overall_ratio:.1%})")
-            print(f"    {len(all_segments_compressed)} segments compressed")
-        """
-
-
-
-
-
         # 🆕 COMPRESS EACH SLIC SEGMENT INDIVIDUALLY
         print("  Applying DCT compression to SLIC segments...")
         all_segments_compressed = []
         total_segments_original = 0
         total_segments_compressed = 0
 
-        for segment_idx, segment_info in enumerate(segment_boundaries):
+        #for segment_idx, segment_info in enumerate(segment_boundaries):
+        for segment_idx, segment_data in enumerate(segment_boundaries):
             # Create mask for this specific segment
-            segment_mask = (roi_segments == segment_info['segment_id']) & bbox_mask
+            segment_mask = (roi_segments == segment_data['segment_id']) & bbox_mask
             
             if np.sum(segment_mask) > 0:  # Only compress non-empty segments
-                compressed_segment, segment_metrics = compress_segment_with_dct_fixed(
-                    segment_mask, bbox_region, quality=50
-                )
-                
-                """if compressed_segment:
-                    # Calculate size metrics manually since function returns different format
-                    segment_size = 0
-                    compressed_size = 0
+
+                try:
+                    # Get segment ID
+                    segment_id = segment_data.get('segment_id', segment_idx)
                     
-                    for channel_name in ['R', 'G', 'B']:
-                        if channel_name in compressed_segment:
-                            channel_info = compressed_segment[channel_name]
-                            segment_height, segment_width = channel_info['bbox'][2], channel_info['bbox'][3]
-                            segment_size += segment_height * segment_width * 4  # 4 bytes per float32
-                            compressed_size += len(channel_info['compressed_blocks']) * 64 * 4  # Approximate
+                    # Create mask for this specific segment
+                    segment_mask = (roi_segments == segment_id) & bbox_mask
                     
+                    # Skip if mask is empty
+                    segment_pixels = np.sum(segment_mask)
+                    if segment_pixels == 0:
+                        print(f"    Segment {segment_idx+1}: Empty mask, skipping")
+                        continue
+                    
+                    # Calculate original size
+                    segment_original_bytes = segment_pixels * 3
+                    
+                    print(f"    Segment {segment_idx+1} (ID: {segment_id}):")
+                    print(f"      Pixels: {segment_pixels:,}")
+                    print(f"      Original: {segment_original_bytes:,} bytes")
+                    
+                    # Compress this segment
+                    compressed_data, metadata = compress_segment_guaranteed_working(
+                        segment_mask, 
+                        region_image, 
+                        quality=75  # Adjust quality here
+                    )
+                    
+                    # Check if compression was successful
+                    if compressed_data is None or metadata is None:
+                        print(f"      ❌ Failed to compress")
+                        continue
+                    
+                    # Calculate REAL compressed size
+                    compressed_size = calculate_real_compressed_size(compressed_data)
+                    
+                    # Calculate compression ratio
+                    if compressed_size > 0:
+                        compression_ratio = segment_original_bytes / compressed_size
+                    else:
+                        compression_ratio = 0
+                    
+                    # Decompress to verify quality and calculate PSNR
+                    psnr = 0
+                    if compressed_data and metadata:
+                        recon_segment = decompress_segment_dct(
+                            compressed_data, 
+                            metadata, 
+                            original_region_shape=region_image.shape
+                        )
+                        
+                        if recon_segment is not None:
+                            # Calculate PSNR
+                            psnr = calculate_psnr_for_segment(
+                                region_image, 
+                                recon_segment, 
+                                segment_mask, 
+                                metadata['segment_bbox']
+                            )
+                            
+                            print(f"      Compressed: {compressed_size:,} bytes")
+                            print(f"      Ratio: {compression_ratio:.2f}:1")
+                            print(f"      PSNR: {psnr:.2f} dB")
+                            
+                            # Check if we actually achieved compression
+                            if compression_ratio > 1.0:
+                                print(f"      ✅ Compression achieved!")
+                            else:
+                                print(f"      ⚠️ File size increased")
+                    
+                    # Store ALL necessary data for reconstruction
                     all_segments_compressed.append({
-                        'segment_id': segment_info['segment_id'],
-                        'compressed_data': compressed_segment,
+                        'segment_id': segment_id,
+                        'compressed_data': compressed_data,  # The actual compressed coefficients
+                        'metadata': metadata,  # ← CRITICAL: Store metadata too!
+                        'mask': segment_mask,  # The binary mask
+                        'bbox': metadata['segment_bbox'],  # Bounding box from metadata
                         'metrics': {
-                            'original_size': segment_size,
+                            'original_size': segment_original_bytes,
                             'compressed_size': compressed_size,
-                            'compression_ratio': compressed_size / segment_size if segment_size > 0 else 0
+                            'compression_ratio': compression_ratio,
+                            'psnr': psnr
                         }
                     })
                     
-                    # Accumulate metrics
-                    total_segments_original += segment_size
+                    total_segments_original += segment_original_bytes
                     total_segments_compressed += compressed_size
-                    """
+                    
+                except Exception as e:
+                    print(f"    Segment {segment_idx+1}: Error - {str(e)[:100]}...")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+
+                """compressed_segment, segment_metrics = compress_segment_simple_dct(
+                    segment_mask, bbox_region, quality=50
+                )
                 
-
-
                 if compressed_segment:
                     # Calculate ACTUAL sizes
                     segment_original_size = calculate_original_size(segment_mask, bbox_region)
@@ -1862,21 +3012,290 @@ if __name__ == "__main__":
                     total_segments_original += segment_original_size
                     total_segments_compressed += segment_compressed_size
 
-                """ # Print segment compression results
+                # Print segment compression results
                 if total_segments_original > 0:
                     overall_ratio = total_segments_compressed / total_segments_original
                     print(f"    Segments compression: {total_segments_original:,} → {total_segments_compressed:,} bytes ({overall_ratio:.1%})")
                     print(f"    {len(all_segments_compressed)} segments compressed")"""
+                
+
+
+                """# Test different quality levels to find the sweet spot
+                test_qualities = [10, 25, 50, 75, 90]
+
+                print("Testing compression with different quality levels:")
+                print("=" * 60)
+
+                for test_q in test_qualities:
+                    print(f"\nQuality = {test_q}:")
+                    
+                    # Reset for this test
+                    test_original = 0
+                    test_compressed = 0
+                    test_psnr_sum = 0
+                    test_segments = 0
+                    
+                    for segment_idx, segment_data in enumerate(segment_boundaries[:5]):  # Test first 5
+                        try:
+                            segment_id = segment_data.get('segment_id', segment_idx)
+                            segment_mask = (roi_segments == segment_id) & bbox_mask
+                            
+                            if np.sum(segment_mask) == 0:
+                                continue
+                            
+                            segment_pixels = np.sum(segment_mask)
+                            segment_original_bytes = segment_pixels * 3
+                            
+                            # Compress with test quality
+                            compressed, meta = compress_segment_with_dct_fixed(
+                                segment_mask, 
+                                region_image, 
+                                quality=test_q
+                            )
+                            
+                            if compressed:
+                                comp_size, orig_size, ratio = calculate_compression_statistics(
+                                    compressed, 
+                                    segment_original_bytes
+                                )
+                                
+                                # Decompress for PSNR
+                                recon = decompress_segment_dct(compressed, meta, region_image.shape)
+                                if recon is not None:
+                                    psnr = calculate_psnr_for_segment(
+                                        region_image, recon, segment_mask, meta['segment_bbox']
+                                    )
+                                    
+                                    test_original += orig_size
+                                    test_compressed += comp_size
+                                    test_psnr_sum += psnr
+                                    test_segments += 1
+                    
+                        except Exception as e:
+                            continue"""
+                
+
+
+                """ compressed_segment, segment_metrics = compress_segment_with_dct_fixed(
+                    segment_mask, bbox_region, quality=50
+                )
+
+                if compressed_segment:
+                    # Calculate ACTUAL sizes
+                    segment_original_size = calculate_original_size(segment_mask, bbox_region)
+                    segment_compressed_size = calculate_actual_compressed_size(compressed_segment)
+                    
+                    all_segments_compressed.append({
+                        'segment_id': segment_info['segment_id'],
+                        'compressed_data': compressed_segment,
+                        'metrics': {
+                            'original_size': segment_original_size,
+                            'compressed_size': segment_compressed_size,
+                            'compression_ratio': segment_compressed_size / segment_original_size
+                        }
+                    })"""
+                
+                """total_segments_original += segment_original_size
+                total_segments_compressed += segment_compressed_size
+                
+                avg_psnr = test_psnr_sum / test_segments
+                overall_ratio = test_original / test_compressed if test_compressed > 0 else 1
+                
+                print(f"  Segments tested: {test_segments}")
+                print(f"  Avg PSNR: {avg_psnr:.2f} dB")
+                print(f"  Compression ratio: {overall_ratio:.2f}:1")
+                print(f"  Original: {test_original:,} bytes")
+                print(f"  Compressed: {test_compressed:,} bytes")
+                
+                if overall_ratio > 1.0:
+                    print(f"  ✅ ACTUAL COMPRESSION ACHIEVED!")
+                else:
+                    print(f"  ❌ Still increasing size")"""
+
+
 
                 
                 # Print REAL compression results
-                if total_segments_original > 0:
+                """if total_segments_original > 0:
                     overall_ratio = total_segments_compressed / total_segments_original
                     print(f"    REAL compression: {total_segments_original:,} → {total_segments_compressed:,} bytes ({overall_ratio:.1%})")
                     print(f"    {len(all_segments_compressed)} segments compressed")
                     
                     if overall_ratio < 1.0:  print(f"    ✅ ACTUAL SPACE SAVING: {(1-overall_ratio)*100:.1f}%")
-                    else:  print(f"    ❌ NO COMPRESSION: {((overall_ratio-1)*100):.1f}% SIZE INCREASE")
+                    else:  print(f"    ❌ NO COMPRESSION: {((overall_ratio-1)*100):.1f}% SIZE INCREASE")"""
+
+        
+
+                # Inside your region processing loop, after compression:
+                print(f"  Region {i+1} compression summary:")
+
+                # Create reconstructed ROI by combining all decompressed segments
+                if all_segments_compressed:
+                    # Initialize empty reconstructed region
+                    reconstructed_region = np.zeros_like(region_image)
+                    
+                    # Keep track of PSNR for each segment
+                    segment_psnrs = []
+                    segment_masks = []
+                    
+                    print(f"  Number of segments to reconstruct: {len(all_segments_compressed)}")
+                    
+                    # Reconstruct each segment and place it in the reconstructed region
+                    for seg_idx, seg_data in enumerate(all_segments_compressed):
+                        print(f"  Processing segment {seg_idx + 1}/{len(all_segments_compressed)}")
+                        
+                        # Check what keys are available
+                        print(f"    Available keys: {list(seg_data.keys())}")
+                        
+                        # Get segment data - use the correct key name
+                        if 'compressed_data' in seg_data:
+                            compressed = seg_data['compressed_data']
+                        elif 'compressed' in seg_data:
+                            compressed = seg_data['compressed']
+                        else:
+                            print(f"    ⚠️ No compressed data found in segment {seg_idx}")
+                            continue
+                        
+                        if 'metadata' in seg_data:
+                            metadata = seg_data['metadata']
+                        elif 'meta' in seg_data:
+                            metadata = seg_data['meta']
+                        else:
+                            print(f"    ⚠️ No metadata found in segment {seg_idx}")
+                            continue
+                        
+                        if 'mask' in seg_data:
+                            segment_mask = seg_data['mask']
+                        else:
+                            print(f"    ⚠️ No mask found in segment {seg_idx}")
+                            continue
+                        
+                        # Get bounding box
+                        if 'bbox' in seg_data:
+                            segment_bbox = seg_data['bbox']
+                        elif 'segment_bbox' in seg_data:
+                            segment_bbox = seg_data['segment_bbox']
+                        elif metadata and 'segment_bbox' in metadata:
+                            segment_bbox = metadata['segment_bbox']
+                        else:
+                            print(f"    ⚠️ No bounding box found for segment {seg_idx}")
+                            continue
+                        
+                        # Get PSNR if available
+                        psnr = seg_data.get('psnr', 0)
+                        if 'metrics' in seg_data and 'psnr' in seg_data['metrics']:
+                            psnr = seg_data['metrics']['psnr']
+                        
+                        # Debug: Check compressed data structure
+                        print(f"    Compressed channels: {list(compressed.keys()) if compressed else 'None'}")
+                        
+                        # Decompress this segment
+                        recon_segment = decompress_segment_dct(
+                            compressed, 
+                            metadata, 
+                            original_region_shape=region_image.shape
+                        )
+                        
+                        if recon_segment is not None:
+                            # Place in reconstructed region
+                            min_row, min_col, height, width = segment_bbox
+                            
+                            # Make sure dimensions match
+                            if (recon_segment.shape[0] == height and 
+                                recon_segment.shape[1] == width):
+                                
+                                reconstructed_region[min_row:min_row+height, min_col:min_col+width] = recon_segment
+                                
+                                # Store for visualization
+                                segment_psnrs.append(psnr)
+                                segment_masks.append(segment_mask)
+                                
+                                print(f"    ✓ Successfully placed segment {seg_idx}")
+                            else:
+                                print(f"    ⚠️ Dimension mismatch: Segment {recon_segment.shape}, BBox {height}x{width}")
+                        else:
+                            print(f"    ⚠️ Failed to decompress segment {seg_idx}")
+                    
+                    print(f"  Successfully reconstructed {len(segment_psnrs)}/{len(all_segments_compressed)} segments")
+                    
+                    # Calculate overall PSNR for the entire region
+                    if len(segment_psnrs) > 0:
+                        overall_psnr = np.mean(segment_psnrs)
+                        
+                        # Calculate total sizes
+                        total_original = 0
+                        total_compressed = 0
+                        
+                        for seg_data in all_segments_compressed:
+                            if 'metrics' in seg_data:
+                                total_original += seg_data['metrics'].get('original_size', 0)
+                                total_compressed += seg_data['metrics'].get('compressed_size', 0)
+                            elif 'original_size' in seg_data:
+                                total_original += seg_data.get('original_size', 0)
+                                total_compressed += seg_data.get('compressed_size', 0)
+                        
+                        if total_compressed > 0 and total_original > 0:
+                            overall_ratio = total_original / total_compressed
+                            space_savings = (1 - total_compressed/total_original) * 100
+                            
+                            print(f"    Total original: {total_original:,} bytes")
+                            print(f"    Total compressed: {total_compressed:,} bytes")
+                            print(f"    Overall compression ratio: {overall_ratio:.2f}:1")
+                            print(f"    Space savings: {space_savings:.1f}%")
+                            print(f"    Average PSNR: {overall_psnr:.2f} dB")
+                            
+                            # SHOW VISUAL COMPARISON
+                            if np.sum(reconstructed_region) > 0:  # Check if we have any data
+                                print(f"\n  Showing visual comparison...")
+                                
+                                # Simple side-by-side comparison first
+                                fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+                                
+                                # Original
+                                axes[0].imshow(region_image)
+                                axes[0].set_title(f'Original ROI\n{region_image.shape[1]}x{region_image.shape[0]}')
+                                axes[0].axis('off')
+                                
+                                # Reconstructed
+                                axes[1].imshow(reconstructed_region)
+                                axes[1].set_title(f'Reconstructed ROI\nCompression: {overall_ratio:.2f}:1\nPSNR: {overall_psnr:.2f} dB')
+                                axes[1].axis('off')
+                                
+                                plt.tight_layout()
+                                plt.show()
+
+                                visualize_roi_comparison(
+                                    original_region=region_image,
+                                    reconstructed_region=reconstructed_region,
+                                    segment_masks=segment_masks,
+                                    region_idx=i+1,
+                                    quality=75,  # Use your actual quality parameter
+                                    overall_ratio=overall_ratio,
+                                    avg_psnr=overall_psnr
+                                )
+                                
+                            else:
+                                print("    ⚠️ Reconstructed region is empty (all zeros)")
+                        else:
+                            print("    ⚠️ No valid compression statistics")
+                    else:
+                        print("    ⚠️ No segments were successfully reconstructed")
+                else:
+                    print("    ⚠️ No compressed segments found")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1915,12 +3334,12 @@ if __name__ == "__main__":
         plt.imshow(bbox_mask, cmap='gray')
         
         # Plot each segment boundary
-        colors = plt.cm.Set3(np.linspace(0, 1, len(segment_boundaries)))
+        """colors = plt.cm.Set3(np.linspace(0, 1, len(segment_boundaries)))
         for j, segment in enumerate(segment_boundaries):
             coords = np.array(segment['boundary_coords'])
             if len(coords) > 0:
                 plt.plot(coords[:, 1], coords[:, 0], color=colors[j], linewidth=2, 
-                        label=f'Seg {segment["segment_id"]}')
+                        label=f'Seg {segment["segment_id"]}')"""
         
         plt.title(f'Extracted Boundaries\n{len(segment_boundaries)} segments')
         plt.axis('off')
@@ -1968,7 +3387,7 @@ if __name__ == "__main__":
 
 
         # 🆕 DECOMPRESS AND VISUALIZE ALL SEGMENTS
-        print("  Decompressing segments to verify quality...")
+        """print("  Decompressing segments to verify quality...")
         reconstructed_region = np.zeros_like(bbox_region)
 
         for segment_data in all_segments_compressed:
@@ -1976,8 +3395,8 @@ if __name__ == "__main__":
             segment_mask = (roi_segments == segment_id) & bbox_mask
             
             # Use the improved decompression
-            segment_reconstructed = decompress_segment_fixed(
-                segment_data['compressed_data'], segment_mask, quality=100
+            segment_reconstructed = decompress_segment_simple_dct(
+                segment_data['compressed_data'], segment_mask
             )
             
             # Add to final reconstruction
@@ -1996,7 +3415,7 @@ if __name__ == "__main__":
         mse = np.mean((original_masked.astype(float) - reconstructed_masked.astype(float)) ** 2)
         psnr = 20 * np.log10(max_pixel / np.sqrt(mse)) if mse > 0 else 100
 
-        print(f"  Reconstruction quality: PSNR = {psnr:.2f} dB")
+        print(f"  Reconstruction quality: PSNR = {psnr:.2f} dB")"""
 
 
 
@@ -2065,7 +3484,7 @@ if __name__ == "__main__":
 
 
 
-        # 🆕 VISUALIZE RESULTS
+        """# 🆕 VISUALIZE RESULTS
         plt.figure(figsize=(15, 5))
 
         plt.subplot(1, 3, 1)
@@ -2086,7 +3505,7 @@ if __name__ == "__main__":
         plt.axis('off')
 
         plt.tight_layout()
-        plt.show()
+        plt.show()"""
 
         
 
