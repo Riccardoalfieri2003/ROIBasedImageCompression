@@ -2922,7 +2922,62 @@ def calculate_content_compression_stats(compression_result):
 
 
 
-def calculate_psnr_for_region_correct(original_region, reconstructed_region, roi_mask):
+
+def calculate_psnr_for_region_correct(original, reconstructed, mask):
+    """
+    Robust PSNR calculation with error handling.
+    
+    Args:
+        original: Original image (uint8)
+        reconstructed: Reconstructed image (uint8)
+        mask: Optional boolean mask
+    
+    Returns:
+        PSNR in dB
+    """
+    # Ensure images are same shape and type
+    if original.shape != reconstructed.shape:
+        raise ValueError(f"Shape mismatch: {original.shape} vs {reconstructed.shape}")
+    
+    # Convert to float for calculation
+    original_float = original.astype(np.float64)
+    reconstructed_float = reconstructed.astype(np.float64)
+    
+    # Apply mask if provided
+    if mask is not None:
+        if mask.shape != original.shape[:2]:
+            raise ValueError(f"Mask shape mismatch: {mask.shape} vs {original.shape[:2]}")
+        
+        # Get indices of masked pixels
+        rows, cols = np.where(mask)
+        
+        if len(rows) == 0:
+            return float('inf')  # No pixels to compare
+        
+        # Extract only masked pixels from all channels
+        original_masked = original_float[rows, cols, :]
+        reconstructed_masked = reconstructed_float[rows, cols, :]
+        
+        # Flatten for MSE calculation
+        original_flat = original_masked.flatten()
+        reconstructed_flat = reconstructed_masked.flatten()
+        
+        mse = np.mean((original_flat - reconstructed_flat) ** 2)
+    else:
+        # Consider all pixels
+        original_flat = original_float.flatten()
+        reconstructed_flat = reconstructed_float.flatten()
+        mse = np.mean((original_flat - reconstructed_flat) ** 2)
+    
+    # Handle zero MSE
+    if mse == 0:
+        return float('inf')
+    
+    # PSNR calculation (max value is 255 for uint8)
+    psnr = 10 * np.log10((255.0 ** 2) / mse)
+    return psnr
+
+def calculate_psnr_for_region_correct_1(original_region, reconstructed_region, roi_mask):
     """
     CORRECT PSNR calculation - compares ONLY ROI pixels
     """
@@ -3027,6 +3082,992 @@ def visualize_roi_comparison_correct(original_region, reconstructed_region, roi_
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ==============================================
+# NEW FUNCTIONS FOR HOMOGENEOUS REGION COMPRESSION
+# ==============================================
+
+def analyze_region_homogeneity(region_image, region_mask):
+    """
+    Analyze how homogeneous a region is by checking color variance.
+    Returns homogeneity score (0-1, where 1 is perfectly homogeneous)
+    and mean color.
+    """
+    # Extract only the masked pixels
+    rows, cols = np.where(region_mask)
+    masked_pixels = region_image[rows, cols]
+    
+    if len(masked_pixels) == 0:
+        return 0.0, np.array([0, 0, 0])
+    
+    # Calculate color variance for each channel
+    mean_color = np.mean(masked_pixels, axis=0)
+    variance = np.var(masked_pixels, axis=0)
+    
+    # Normalize variance to 0-1 range (assuming 0-255 pixel values)
+    max_variance = 255 * 255  # Max possible variance
+    normalized_variance = np.mean(variance) / max_variance
+    
+    # Homogeneity score = 1 - normalized variance
+    homogeneity_score = 1.0 - normalized_variance
+    
+    return homogeneity_score, mean_color.astype(np.uint8)
+
+
+def compress_homogeneous_region_mean_color(region_image, region_mask, store_residual=True):
+    """
+    Fixed version: Properly handle mean color and residual.
+    """
+    # Get mean color - ensure it's calculated correctly
+    _, mean_color = analyze_region_homogeneity(region_image, region_mask)
+    
+    # Get mask coordinates
+    rows, cols = np.where(region_mask)
+    num_pixels = len(rows)
+    
+    if num_pixels == 0:
+        return None
+    
+    # Create compressed data structure
+    compressed_data = {
+        'method': 'mean_color',
+        'mean_color': mean_color.astype(np.uint8),  # Ensure uint8
+        'mask_rows': rows,
+        'mask_cols': cols,
+        'store_residual': store_residual,
+        'original_size': num_pixels * 3,
+        'shape': region_image.shape
+    }
+    
+    # Calculate residual if requested
+    if store_residual:
+        # Reconstruct mean image
+        mean_image = np.zeros_like(region_image)
+        mean_image[rows, cols] = mean_color
+        
+        # Calculate residual (difference from original)
+        residual = region_image.astype(np.int16) - mean_image.astype(np.int16)
+        residual_values = residual[rows, cols]
+        
+        # Quantize residual to save space but maintain quality
+        # Use 2-bit quantization (values: -64, 0, 64) for significant compression
+        residual_quantized = np.clip(np.round(residual_values / 64), -2, 2).astype(np.int8)
+        
+        compressed_data['residual'] = residual_quantized
+        compressed_data['quantization_step'] = 64
+    
+    return compressed_data
+
+
+def reconstruct_homogeneous_region_mean_color(compressed_data, image_shape):
+    """
+    Fixed reconstruction: Properly apply mean color and residual.
+    """
+    shape = compressed_data['shape']
+    mean_color = compressed_data['mean_color']
+    rows = compressed_data['mask_rows']
+    cols = compressed_data['mask_cols']
+    
+    # Create blank image
+    reconstructed = np.zeros(shape, dtype=np.uint8)
+    
+    # Fill with mean color
+    reconstructed[rows, cols] = mean_color
+    
+    # Add residual if available
+    if compressed_data.get('store_residual', False) and 'residual' in compressed_data:
+        residual_quantized = compressed_data['residual']
+        quantization_step = compressed_data.get('quantization_step', 64)
+        
+        # Dequantize residual
+        residual = residual_quantized.astype(np.float32) * quantization_step
+        
+        # Add to reconstruction and clip to valid range
+        reconstructed_values = reconstructed[rows, cols].astype(np.float32) + residual
+        reconstructed[rows, cols] = np.clip(reconstructed_values, 0, 255).astype(np.uint8)
+    
+    return reconstructed
+
+
+def compress_subregion_smart(segment_image, segment_mask, homogeneity_threshold=0.85):
+    """
+    Smart subregion compression: use mean color for homogeneous regions,
+    fall back to DCT for complex regions.
+    """
+    # Analyze homogeneity
+    homogeneity_score, _ = analyze_region_homogeneity(segment_image, segment_mask)
+    
+    # Decide which compression method to use
+    if homogeneity_score >= homogeneity_threshold:
+        # Use mean color compression for homogeneous regions
+        return compress_homogeneous_region_mean_color(
+            segment_image, 
+            segment_mask,
+            store_residual=True  # Store residual for quality
+        )
+    else:
+        # Fall back to standard DCT compression for complex regions
+        return compress_roi_content_only(segment_mask, segment_image, quality=75)
+
+
+def reconstruct_subregion_smart(compressed_data, image_shape, segment_mask):
+    """
+    Reconstruct from smart compression based on method used.
+    """
+    if compressed_data.get('method') == 'mean_color':
+        return reconstruct_homogeneous_region_mean_color(compressed_data, image_shape)
+    else:
+        # Fall back to standard reconstruction
+        return reconstruct_roi_content(
+            compressed_data['compressed_coefficients'],
+            image_shape,
+            segment_mask
+        )
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ==============================================
+# FIXED RECONSTRUCTION FUNCTIONS
+# ==============================================
+def compress_homogeneous_region_fixed(region_image, region_mask, store_residual=True):
+    """
+    Fixed compression for homogeneous regions.
+    Returns compression data structure.
+    """
+    # Get mean color
+    homogeneity_score, mean_color = analyze_region_homogeneity(region_image, region_mask)
+    
+    # Get mask coordinates
+    rows, cols = np.where(region_mask)
+    num_pixels = len(rows)
+    
+    if num_pixels == 0:
+        return None
+    
+    # Create compressed data structure
+    compressed_data = {
+        'method': 'mean_color',
+        'mean_color': mean_color.astype(np.uint8),
+        'mask_rows': rows,
+        'mask_cols': cols,
+        'store_residual': store_residual,
+        'original_size': num_pixels * 3,
+        'image_shape': region_image.shape,
+        'homogeneity_score': homogeneity_score
+    }
+    
+    # Calculate residual if requested
+    if store_residual:
+        # Create mean image for this segment
+        mean_image = np.zeros(region_image.shape, dtype=np.uint8)
+        mean_image[rows, cols] = mean_color
+        
+        # Calculate residual (difference from original)
+        residual = region_image.astype(np.int16) - mean_image.astype(np.int16)
+        residual_values = residual[rows, cols]
+        
+        # Quantize residual (use 3-bit quantization: values from -4 to 3)
+        # This gives us 3 bits per channel (instead of 8)
+        residual_quantized = np.clip(np.round(residual_values / 32), -4, 3).astype(np.int8)
+        
+        compressed_data['residual'] = residual_quantized
+        compressed_data['quantization_step'] = 32
+        compressed_data['residual_range'] = (-4, 3)
+    
+    return compressed_data
+
+def reconstruct_homogeneous_region_fixed(compressed_data):
+    """
+    Reconstruct image from homogeneous region compression data.
+    Returns full reconstructed image.
+    """
+    # Get parameters from compressed data
+    image_shape = compressed_data['image_shape']
+    mean_color = compressed_data['mean_color']
+    rows = compressed_data['mask_rows']
+    cols = compressed_data['mask_cols']
+    
+    # Create blank image
+    reconstructed = np.zeros(image_shape, dtype=np.uint8)
+    
+    # Fill with mean color
+    reconstructed[rows, cols] = mean_color
+    
+    # Add residual if available
+    if compressed_data.get('store_residual', False) and 'residual' in compressed_data:
+        residual_quantized = compressed_data['residual']
+        quantization_step = compressed_data.get('quantization_step', 32)
+        
+        # Dequantize residual
+        residual = residual_quantized.astype(np.float32) * quantization_step
+        
+        # Apply residual and clip to valid range
+        reconstructed_values = reconstructed[rows, cols].astype(np.float32) + residual
+        reconstructed[rows, cols] = np.clip(reconstructed_values, 0, 255).astype(np.uint8)
+    
+    return reconstructed
+
+
+def calculate_actual_compression_size_fixed(compressed_data):
+    """
+    Calculate actual compressed size in bytes.
+    """
+    if compressed_data['method'] != 'mean_color':
+        return compressed_data.get('compressed_size', 0)
+    
+    size = 0
+    
+    # Mean color: 3 bytes
+    size += 3
+    
+    # Homogeneity score: 4 bytes (float)
+    size += 4
+    
+    # Number of pixels: 4 bytes (int32)
+    size += 4
+    
+    # Mask coordinates: 
+    num_pixels = len(compressed_data['mask_rows'])
+    # We can store coordinates as uint16 if image is < 65536 pixels in each dimension
+    size += num_pixels * 4  # 2 bytes for row, 2 bytes for col
+    
+    # Residual if stored
+    if compressed_data.get('store_residual', False) and 'residual' in compressed_data:
+        # Residual is int8 (1 byte per value)
+        residual_size = compressed_data['residual'].size
+        size += residual_size
+    
+    return size
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ==============================================
+# TEXTURE-AWARE HOMOGENEOUS COMPRESSION
+# ==============================================
+
+def analyze_region_texture(region_image, region_mask):
+    """
+    Analyze if region has simple texture pattern.
+    Returns: base_color, texture_pattern (small representative patch), texture_complexity
+    """
+    rows, cols = np.where(region_mask)
+    if len(rows) == 0:
+        return None, None, 1.0
+    
+    # Get region bounding box
+    min_r, max_r = rows.min(), rows.max()
+    min_c, max_c = cols.min(), cols.max()
+    
+    # Extract region
+    region_crop = region_image[min_r:max_r+1, min_c:max_c+1]
+    mask_crop = region_mask[min_r:max_r+1, min_c:max_c+1]
+    
+    # Calculate base color (mean)
+    masked_pixels = region_image[rows, cols]
+    base_color = np.mean(masked_pixels, axis=0).astype(np.uint8)
+    
+    # Calculate deviation from mean (texture pattern)
+    base_image = np.full_like(region_crop, base_color)
+    texture = region_crop.astype(np.int16) - base_image.astype(np.int16)
+    
+    # Only consider masked area
+    texture_masked = texture * mask_crop[:, :, np.newaxis]
+    
+    # Analyze texture complexity
+    # If texture is mostly zero or simple pattern, we can compress it efficiently
+    texture_energy = np.mean(np.abs(texture_masked))
+    texture_complexity = min(1.0, texture_energy / 50.0)  # Normalize
+    
+    # Find a small representative patch (e.g., 4x4 pixels)
+    patch_size = 4
+    if region_crop.shape[0] >= patch_size and region_crop.shape[1] >= patch_size:
+        # Take top-left corner (or find most representative area)
+        texture_patch = texture_masked[:patch_size, :patch_size, :]
+    else:
+        texture_patch = texture_masked
+    
+    return base_color, texture_patch, texture_complexity
+
+
+def compress_textured_homogeneous_region(region_image, region_mask, texture_quality=4):
+    """
+    Compress homogeneous region with texture.
+    Strategy: Base color + Quantized texture pattern
+    """
+    rows, cols = np.where(region_mask)
+    if len(rows) == 0:
+        return None
+    
+    num_pixels = len(rows)
+    original_size = num_pixels * 3
+    
+    # Analyze texture
+    base_color, texture_patch, complexity = analyze_region_texture(region_image, region_mask)
+    
+    # Get bounding box
+    min_r, max_r = rows.min(), rows.max()
+    min_c, max_c = cols.min(), cols.max()
+    bbox = (min_r, min_c, max_r, max_c)
+    
+    compressed_data = {
+        'method': 'texture_aware',
+        'base_color': base_color,
+        'bbox': bbox,
+        'num_pixels': num_pixels,
+        'original_size': original_size,
+        'texture_complexity': complexity
+    }
+    
+    # STRATEGY 1: If texture is very simple (complexity < 0.2), just store base color
+    if complexity < 0.2:
+        # Very homogeneous - just base color
+        compressed_size = 3 + 16  # color + bbox
+        compressed_data['compressed_size'] = compressed_size
+        compressed_data['has_texture'] = False
+        compressed_data['texture_data'] = None
+    
+    # STRATEGY 2: Simple texture - store quantized pattern
+    else:
+        # Quantize texture patch to reduce size
+        # texture_patch is int16 (-255 to 255), we quantize to fewer bits
+        if texture_patch is not None:
+            # Quantize to 3-bit per channel (-3, -2, -1, 0, 1, 2, 3)
+            quantized_texture = np.clip(np.round(texture_patch / texture_quality), -3, 3).astype(np.int8)
+            
+            # Flatten and store
+            texture_bytes = quantized_texture.tobytes()
+            texture_size = len(texture_bytes)
+            
+            compressed_data['texture_data'] = texture_bytes
+            compressed_data['texture_shape'] = texture_patch.shape
+            compressed_data['quantization_step'] = texture_quality
+            compressed_data['has_texture'] = True
+            
+            compressed_size = 3 + 16 + texture_size  # color + bbox + texture
+        else:
+            compressed_size = 3 + 16
+            compressed_data['has_texture'] = False
+    
+    compressed_data['compressed_size'] = compressed_size
+    compressed_data['compression_ratio'] = original_size / compressed_size
+    
+    return compressed_data
+
+
+def reconstruct_textured_homogeneous_region(compressed_data, region_mask, image_shape):
+    """
+    Reconstruct region using the provided mask.
+    """
+    reconstructed = np.zeros(image_shape, dtype=np.uint8)
+    base_color = compressed_data['base_color']
+    
+    # Get bounding box
+    min_r, min_c, max_r, max_c = compressed_data['bbox']
+    
+    # Fill masked area with base color
+    rows, cols = np.where(region_mask)
+    reconstructed[rows, cols] = base_color
+    
+    # Add texture if available
+    if compressed_data.get('has_texture', False) and 'texture_data' in compressed_data:
+        # Reconstruct texture pattern
+        texture_bytes = compressed_data['texture_data']
+        texture_shape = compressed_data['texture_shape']
+        quant_step = compressed_data.get('quantization_step', 4)
+        
+        # Convert bytes back to array
+        quantized_texture = np.frombuffer(texture_bytes, dtype=np.int8).reshape(texture_shape)
+        
+        # Dequantize
+        texture_pattern = quantized_texture.astype(np.int16) * quant_step
+        
+        # Tile texture pattern
+        patch_h, patch_w = texture_shape[:2]
+        bbox_height = max_r - min_r + 1
+        bbox_width = max_c - min_c + 1
+        
+        # Create texture for each masked pixel in bounding box
+        for r, c in zip(rows, cols):
+            if min_r <= r <= max_r and min_c <= c <= max_c:
+                # Calculate position in texture tile
+                tex_r = (r - min_r) % patch_h
+                tex_c = (c - min_c) % patch_w
+                
+                # Apply texture
+                pixel_value = reconstructed[r, c].astype(np.int16) + texture_pattern[tex_r, tex_c]
+                reconstructed[r, c] = np.clip(pixel_value, 0, 255).astype(np.uint8)
+    
+    return reconstructed
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ==============================================
+# SHARED QUANTIZATION TABLE OPTIMIZATION
+# ==============================================
+
+def analyze_subregions_frequency_content(region_image, segment_boundaries, roi_segments, bbox_mask):
+    """
+    Analyze frequency content of all subregions to design optimal shared quantization table.
+    Returns: frequency statistics and recommended quantization table
+    """
+    print(f"  Analyzing frequency content of {len(segment_boundaries)} subregions...")
+    
+    # Initialize frequency statistics
+    dct_coefficients = []
+    block_count = 0
+    
+    # Standard JPEG luminance quantization table (will be adapted)
+    std_qtable = np.array([
+        [16, 11, 10, 16, 24, 40, 51, 61],
+        [12, 12, 14, 19, 26, 58, 60, 55],
+        [14, 13, 16, 24, 40, 57, 69, 56],
+        [14, 17, 22, 29, 51, 87, 80, 62],
+        [18, 22, 37, 56, 68, 109, 103, 77],
+        [24, 35, 55, 64, 81, 104, 113, 92],
+        [49, 64, 78, 87, 103, 121, 120, 101],
+        [72, 92, 95, 98, 112, 100, 103, 99]
+    ], dtype=np.float32)
+    
+    # Collect DCT coefficients from all subregions
+    for seg_idx, seg_data in enumerate(segment_boundaries[:20]):  # Sample first 20 segments
+        segment_id = seg_data.get('segment_id', seg_idx)
+        segment_mask = (roi_segments == segment_id) & bbox_mask
+        
+        segment_pixels = np.sum(segment_mask)
+        if segment_pixels < 64:  # Need at least 8x8 block
+            continue
+        
+        # Extract region
+        rows, cols = np.where(segment_mask)
+        min_r, max_r = rows.min(), rows.max()
+        min_c, max_c = cols.min(), cols.max()
+        
+        # Get region image
+        region_crop = region_image[min_r:max_r+1, min_c:max_c+1]
+        mask_crop = segment_mask[min_r:max_r+1, min_c:max_c+1]
+        
+        # Process 8x8 blocks
+        h, w = region_crop.shape[:2]
+        for i in range(0, h-7, 8):
+            for j in range(0, w-7, 8):
+                # Check if block has enough masked pixels
+                block_mask = mask_crop[i:i+8, j:j+8]
+                if np.sum(block_mask) < 32:  # At least half the block
+                    continue
+                
+                # Get block
+                block = region_crop[i:i+8, j:j+8]
+                
+                # Convert to YCbCr and take Y channel (luminance)
+                if block.shape[2] == 3:
+                    block_ycbcr = cv2.cvtColor(block, cv2.COLOR_RGB2YCrCb)
+                    block_y = block_ycbcr[:, :, 0].astype(np.float32) - 128
+                else:
+                    block_y = block[:, :, 0].astype(np.float32) - 128
+                
+                # Apply DCT
+                dct_block = cv2.dct(block_y)
+                dct_coefficients.append(dct_block)
+                block_count += 1
+    
+    print(f"    Analyzed {block_count} 8x8 blocks")
+    
+    if block_count == 0:
+        print(f"    Warning: No valid blocks found, using standard table")
+        return std_qtable
+    
+    # Analyze coefficient statistics
+    dct_coefficients = np.array(dct_coefficients)
+    
+    # Calculate average magnitude for each frequency
+    avg_magnitude = np.mean(np.abs(dct_coefficients), axis=0)
+    
+    # Normalize (DC coefficient is much larger)
+    dc_value = avg_magnitude[0, 0]
+    normalized_magnitude = avg_magnitude / dc_value if dc_value > 0 else avg_magnitude
+    
+    # Design adaptive quantization table
+    # Principle: Preserve frequencies with high average magnitude, discard others
+    adaptive_qtable = std_qtable.copy()
+    
+    # Adjust based on frequency importance
+    for i in range(8):
+        for j in range(8):
+            freq_importance = normalized_magnitude[i, j]
+            
+            # If this frequency is important (carries texture/color info), use milder quantization
+            if freq_importance > 0.1:  # Threshold
+                adaptive_qtable[i, j] = max(1, std_qtable[i, j] * (1.0 - freq_importance))
+            else:
+                # Unimportant frequency - stronger quantization
+                adaptive_qtable[i, j] = std_qtable[i, j] * 2.0
+    
+    # Ensure DC coefficient has minimal quantization (preserve base color)
+    adaptive_qtable[0, 0] = max(1, adaptive_qtable[0, 0] * 0.5)
+    
+    # Clip to reasonable range
+    adaptive_qtable = np.clip(adaptive_qtable, 1, 255).astype(np.uint8)
+    
+    print(f"    Designed adaptive quantization table")
+    print(f"    DC coefficient quantization: {adaptive_qtable[0, 0]} (vs standard {std_qtable[0, 0]})")
+    
+    return adaptive_qtable
+
+
+def compress_subregion_with_shared_qtable(region_image, segment_mask, shared_qtable, quality_factor=75):
+    """
+    Compress subregion using shared quantization table with better edge handling.
+    """
+    rows, cols = np.where(segment_mask)
+    if len(rows) == 0:
+        return None
+    
+    num_pixels = len(rows)
+    original_size = num_pixels * 3
+    
+    # Get region bounds with some padding for edge blocks
+    min_r, max_r = rows.min(), rows.max()
+    min_c, max_c = cols.min(), cols.max()
+    
+    # Add padding to ensure we cover edge pixels
+    pad_r = 8 - ((max_r - min_r + 1) % 8) if (max_r - min_r + 1) % 8 != 0 else 0
+    pad_c = 8 - ((max_c - min_c + 1) % 8) if (max_c - min_c + 1) % 8 != 0 else 0
+    
+    # Extended bounds to include padding
+    ext_min_r = max(0, min_r - 4)  # Pad a bit for safety
+    ext_max_r = min(region_image.shape[0] - 1, max_r + pad_r + 4)
+    ext_min_c = max(0, min_c - 4)
+    ext_max_c = min(region_image.shape[1] - 1, max_c + pad_c + 4)
+    
+    # Extract extended region
+    region_ext = region_image[ext_min_r:ext_max_r+1, ext_min_c:ext_max_c+1]
+    mask_ext = segment_mask[ext_min_r:ext_max_r+1, ext_min_c:ext_max_c+1]
+    
+    # Prepare compressed data structure
+    compressed_data = {
+        'method': 'dct_shared_qtable',
+        'original_size': original_size,
+        'true_bbox': (min_r, min_c, max_r, max_c),  # Actual region bounds
+        'ext_bbox': (ext_min_r, ext_min_c, ext_max_r, ext_max_c),  # Extended bounds
+        'shape': region_ext.shape,
+        'compressed_blocks': [],
+        'use_shared_qtable': True
+    }
+    
+    # Adjust quantization table based on quality factor
+    scale_factor = 1.0
+    if quality_factor < 50:
+        scale_factor = 50.0 / quality_factor
+    else:
+        scale_factor = (100 - quality_factor) / 50.0
+    
+    qtable_scaled = np.clip(np.round(shared_qtable * scale_factor), 1, 255).astype(np.uint8)
+    
+    # Process ALL 8x8 blocks in extended region (not just masked ones)
+    h, w = region_ext.shape[:2]
+    total_blocks = 0
+    compressed_size = 0
+    
+    for i in range(0, h, 8):
+        for j in range(0, w, 8):
+            # Get block bounds (handle partial blocks at edges)
+            i_end = min(i + 8, h)
+            j_end = min(j + 8, w)
+            block_height = i_end - i
+            block_width = j_end - j
+            
+            # Skip blocks with no masked pixels
+            block_mask = mask_ext[i:i_end, j:j_end]
+            if np.sum(block_mask) == 0:
+                continue
+            
+            # Get block (pad if necessary for DCT)
+            block = region_ext[i:i_end, j:j_end]
+            
+            # If block is smaller than 8x8, pad it
+            if block_height < 8 or block_width < 8:
+                block_padded = np.zeros((8, 8, 3), dtype=np.uint8)
+                block_padded[:block_height, :block_width] = block
+                block = block_padded
+            
+            # Convert to YCbCr
+            block_ycbcr = cv2.cvtColor(block, cv2.COLOR_RGB2YCrCb)
+            
+            compressed_block = {}
+            
+            # Process each channel
+            for ch in range(3):
+                # Extract channel and center around 0
+                channel_data = block_ycbcr[:, :, ch].astype(np.float32) - 128
+                
+                # Apply DCT
+                dct_coeffs = cv2.dct(channel_data)
+                
+                # Quantize using shared table
+                quantized = np.round(dct_coeffs / qtable_scaled).astype(np.int16)
+                
+                # Run-length encode (store non-zero coefficients)
+                non_zero_mask = quantized != 0
+                non_zero_coeffs = quantized[non_zero_mask]
+                
+                if len(non_zero_coeffs) > 0:
+                    # Store position and value of non-zero coefficients
+                    positions = np.argwhere(non_zero_mask)
+                    values = non_zero_coeffs
+                    
+                    compressed_block[f'channel_{ch}'] = {
+                        'positions': positions,
+                        'values': values,
+                        'num_coeffs': len(values),
+                        'block_shape': (block_height, block_width)  # Store original block size
+                    }
+                    
+                    # Estimate storage
+                    compressed_size += len(values) * 4  # 2 bytes for position, 2 for value
+                else:
+                    compressed_block[f'channel_{ch}'] = {
+                        'positions': np.array([]),
+                        'values': np.array([]),
+                        'num_coeffs': 0,
+                        'block_shape': (block_height, block_width)
+                    }
+            
+            compressed_data['compressed_blocks'].append({
+                'position': (i, j),
+                'data': compressed_block,
+                'block_size': (block_height, block_width)  # Store for reconstruction
+            })
+            total_blocks += 1
+    
+    # Add overhead
+    compressed_size += 50  # Increased for extra metadata
+    
+    compressed_data['compressed_size'] = compressed_size
+    compressed_data['compression_ratio'] = original_size / compressed_size if compressed_size > 0 else 0
+    compressed_data['num_blocks'] = total_blocks
+    
+    return compressed_data
+
+
+def reconstruct_subregion_with_shared_qtable(compressed_data, shared_qtable, full_image_shape, quality_factor=75):
+    """
+    Reconstruct subregion with proper edge handling.
+    """
+    # Get extended bounding box
+    ext_min_r, ext_min_c, ext_max_r, ext_max_c = compressed_data['ext_bbox']
+    ext_height = ext_max_r - ext_min_r + 1
+    ext_width = ext_max_c - ext_min_c + 1
+    
+    # Create reconstruction of extended region
+    reconstructed_ext = np.zeros((ext_height, ext_width, 3), dtype=np.uint8)
+    
+    # Adjust quantization table
+    scale_factor = 1.0
+    if quality_factor < 50:
+        scale_factor = 50.0 / quality_factor
+    else:
+        scale_factor = (100 - quality_factor) / 50.0
+    
+    qtable_scaled = np.clip(np.round(shared_qtable * scale_factor), 1, 255).astype(np.float32)
+    
+    # Reconstruct each block
+    for block_data in compressed_data['compressed_blocks']:
+        i, j = block_data['position']
+        block_compressed = block_data['data']
+        block_height, block_width = block_data['block_size']
+        
+        # Reconstruct full 8x8 block
+        block_reconstructed = np.zeros((8, 8, 3), dtype=np.float32)
+        
+        for ch in range(3):
+            channel_data = block_compressed.get(f'channel_{ch}', {})
+            positions = channel_data.get('positions', np.array([]))
+            values = channel_data.get('values', np.array([]))
+            
+            if len(positions) > 0:
+                # Create quantized coefficient matrix
+                quantized = np.zeros((8, 8), dtype=np.float32)
+                for idx, (pos, val) in enumerate(zip(positions, values)):
+                    quantized[pos[0], pos[1]] = val
+                
+                # Dequantize
+                dct_coeffs = quantized * qtable_scaled
+                
+                # Inverse DCT
+                channel_recon = cv2.idct(dct_coeffs) + 128
+                block_reconstructed[:, :, ch] = channel_recon
+            else:
+                # If no coefficients, fill with 128 (neutral value)
+                block_reconstructed[:, :, ch] = 128
+        
+        # Convert from YCbCr to RGB
+        block_reconstructed = np.clip(block_reconstructed, 0, 255).astype(np.uint8)
+        block_rgb = cv2.cvtColor(block_reconstructed, cv2.COLOR_YCrCb2RGB)
+        
+        # Place only the valid part (original block size)
+        i_end = min(i + block_height, ext_height)
+        j_end = min(j + block_width, ext_width)
+        
+        if i_end > i and j_end > j:
+            reconstructed_ext[i:i_end, j:j_end] = block_rgb[:i_end-i, :j_end-j]
+    
+    # Create full-sized reconstruction
+    full_reconstructed = np.zeros(full_image_shape, dtype=np.uint8)
+    
+    # Place extended reconstruction back into full image
+    full_h, full_w = full_image_shape[:2]
+    
+    # Calculate valid bounds within full image
+    r_start = ext_min_r
+    r_end = min(ext_max_r + 1, full_h)
+    c_start = ext_min_c
+    c_end = min(ext_max_c + 1, full_w)
+    
+    # Calculate corresponding bounds in reconstructed_ext
+    ext_r_start = 0
+    ext_r_end = min(ext_height, r_end - ext_min_r)
+    ext_c_start = 0
+    ext_c_end = min(ext_width, c_end - ext_min_c)
+    
+    # Copy only the overlapping region
+    if r_start < r_end and c_start < c_end:
+        full_reconstructed[r_start:r_end, c_start:c_end] = \
+            reconstructed_ext[ext_r_start:ext_r_end, ext_c_start:ext_c_end]
+    
+    return full_reconstructed
+
+def fill_border_gaps(reconstructed_image, segment_mask, region_image):
+    """
+    Fill black borders by interpolating from neighboring pixels.
+    """
+    # Create a binary mask of black pixels (all channels near 0)
+    black_mask = np.all(reconstructed_image < 10, axis=2) & segment_mask
+    
+    if not np.any(black_mask):
+        return reconstructed_image
+    
+    # Use morphological dilation to find border regions
+    from scipy import ndimage
+    
+    # Create kernel for dilation
+    kernel = np.ones((3, 3), dtype=bool)
+    
+    # Dilate the non-black area within the mask
+    non_black_mask = ~black_mask & segment_mask
+    dilated_non_black = ndimage.binary_dilation(non_black_mask, structure=kernel, iterations=2)
+    
+    # Find border pixels that are black but adjacent to non-black
+    border_pixels = black_mask & dilated_non_black
+    
+    # For each border pixel, take average of neighboring non-black pixels
+    rows, cols = np.where(border_pixels)
+    
+    for r, c in zip(rows, cols):
+        # Get 3x3 neighborhood
+        r_start = max(0, r-1)
+        r_end = min(reconstructed_image.shape[0], r+2)
+        c_start = max(0, c-1)
+        c_end = min(reconstructed_image.shape[1], c+2)
+        
+        # Get non-black neighbors within the mask
+        neighborhood = reconstructed_image[r_start:r_end, c_start:c_end]
+        neighbor_mask = ~np.all(neighborhood < 10, axis=2) & segment_mask[r_start:r_end, c_start:c_end]
+        
+        if np.any(neighbor_mask):
+            # Average of valid neighbors
+            valid_pixels = neighborhood[neighbor_mask]
+            avg_color = np.mean(valid_pixels, axis=0).astype(np.uint8)
+            reconstructed_image[r, c] = avg_color
+        else:
+            # No valid neighbors, use original image
+            reconstructed_image[r, c] = region_image[r, c]
+    
+    return reconstructed_image
 
 
 
@@ -3328,6 +4369,45 @@ if __name__ == "__main__":
 
         
 
+
+        
+
+
+        
+
+
+        
+
+
+        
+
+
+        
+
+
+        
+
+
+        
+
+
+        
+
+
+        
+
+
+        
+
+
+        
+
+
+        
+
+
+        
+
         # ==============================================
         # MAIN PROCESSING LOOP - One ROI Region at a time
         # ==============================================
@@ -3386,9 +4466,11 @@ if __name__ == "__main__":
             print(f"  Total boundary points: {sum(seg['num_points'] for seg in segment_boundaries):,}")
             
             # ==============================================
-            # 4A. NEW: COMPRESS ROI CONTENT ONLY (No borders/metadata)
+            # 4A. DIRECT ROI COMPRESSION (Whole ROI)
             # ==============================================
-            print(f"\n  COMPRESSING ROI CONTENT (no borders/metadata)...")
+            print(f"\n{'='*60}")
+            print(f"METHOD 1: DIRECT ROI COMPRESSION (Whole ROI)")
+            print(f"{'='*60}")
             
             # Compress ROI content only
             compression_result = compress_roi_content_only(
@@ -3408,278 +4490,690 @@ if __name__ == "__main__":
             )
             
             # CORRECT PSNR calculation (ROI area only)
-            content_psnr = calculate_psnr_for_region_correct(region_image, content_reconstructed, bbox_mask)
+            content_psnr = calculate_psnr_for_region_correct_1(region_image, content_reconstructed, bbox_mask)
             content_stats['psnr'] = content_psnr
             
-            # Show content-only comparison (ROI area only)
-            print(f"\n  CONTENT-ONLY VISUAL COMPARISON (ROI Area Only):")
+            # Store ROI compression results
+            roi_compression_results = {
+                'method': 'Direct ROI',
+                'original_bytes': content_stats['original_bytes'],
+                'compressed_bytes': content_stats['compressed_bytes'],
+                'ratio': content_stats['ratio'],
+                'psnr': content_psnr,
+                'reconstructed': content_reconstructed
+            }
             
-            # Create images with gray background for non-ROI areas
+            # ==============================================
+            # 4B. SUBREGION COMPRESSION (Individual SLIC Segments)
+            # ==============================================
+            """print(f"\n{'='*60}")
+            print(f"METHOD 2: SUBREGION COMPRESSION ({len(segment_boundaries)} segments)")
+            print(f"{'='*60}")
+            
+            subregion_results = []
+            subregion_reconstructed = np.zeros_like(region_image)
+            
+            total_subregion_original = 0
+            total_subregion_compressed = 0
+            subregion_psnrs = []
+            
+            print(f"  Compressing individual segments...")
+            
+            for seg_idx, seg_data in enumerate(segment_boundaries):
+                segment_id = seg_data.get('segment_id', seg_idx)
+                segment_mask = (roi_segments == segment_id) & bbox_mask
+                
+                segment_pixels = np.sum(segment_mask)
+                if segment_pixels == 0:
+                    continue
+                
+                print(f"    Segment {seg_idx+1}/{len(segment_boundaries)} (ID: {segment_id}):")
+                print(f"      Pixels: {segment_pixels:,}")
+                
+                # Compress this segment
+                seg_compression = compress_roi_content_only(
+                    segment_mask,
+                    region_image,
+                    quality=75
+                )
+                
+                if seg_compression is None:
+                    print(f"      ❌ Failed to compress")
+                    continue
+                
+                # Decompress segment
+                seg_reconstructed = reconstruct_roi_content(
+                    seg_compression['compressed_coefficients'],
+                    region_image.shape,
+                    segment_mask
+                )
+                
+                if seg_reconstructed is not None:
+                    # Calculate segment PSNR
+                    seg_psnr = calculate_psnr_for_region_correct(
+                        region_image, 
+                        seg_reconstructed, 
+                        segment_mask
+                    )
+                    
+                    # Update totals
+                    total_subregion_original += seg_compression['original_size']
+                    total_subregion_compressed += seg_compression['compressed_size']
+                    subregion_psnrs.append(seg_psnr)
+                    
+                    # Place in reconstructed image
+                    subregion_reconstructed[segment_mask] = seg_reconstructed[segment_mask]
+                    
+                    # Store segment results
+                    subregion_results.append({
+                        'segment_id': segment_id,
+                        'pixels': segment_pixels,
+                        'original_bytes': seg_compression['original_size'],
+                        'compressed_bytes': seg_compression['compressed_size'],
+                        'ratio': seg_compression['compression_ratio'],
+                        'psnr': seg_psnr
+                    })
+                    
+                    print(f"      Compressed: {seg_compression['compressed_size']:,} bytes")
+                    print(f"      Ratio: {seg_compression['compression_ratio']:.2f}:1")
+                    print(f"      PSNR: {seg_psnr:.2f} dB")
+            
+            # Calculate overall subregion compression stats
+            if total_subregion_compressed > 0:
+                subregion_ratio = total_subregion_original / total_subregion_compressed
+                avg_subregion_psnr = np.mean(subregion_psnrs) if subregion_psnrs else 0
+                
+                # Calculate overall PSNR for subregion reconstruction
+                subregion_overall_psnr = calculate_psnr_for_region_correct(
+                    region_image, 
+                    subregion_reconstructed, 
+                    bbox_mask
+                )
+                
+                print(f"\n  SUBREGION COMPRESSION SUMMARY:")
+                print(f"    Total original: {total_subregion_original:,} bytes")
+                print(f"    Total compressed: {total_subregion_compressed:,} bytes")
+                print(f"    Overall ratio: {subregion_ratio:.2f}:1")
+                print(f"    Average segment PSNR: {avg_subregion_psnr:.2f} dB")
+                print(f"    Overall reconstruction PSNR: {subregion_overall_psnr:.2f} dB")
+                
+                subregion_compression_results = {
+                    'method': 'Subregion',
+                    'original_bytes': total_subregion_original,
+                    'compressed_bytes': total_subregion_compressed,
+                    'ratio': subregion_ratio,
+                    'avg_segment_psnr': avg_subregion_psnr,
+                    'overall_psnr': subregion_overall_psnr,
+                    'reconstructed': subregion_reconstructed,
+                    'segment_results': subregion_results
+                }
+            else:
+                print(f"  ❌ No subregions were successfully compressed")
+                subregion_compression_results = None"""
+            
+
+
+
+            
+            # ==============================================
+            # MODIFIED MAIN LOOP WITH SHARED QUANTIZATION TABLE
+            # ==============================================
+
+            print(f"\n{'='*60}")
+            print(f"METHOD 2: SHARED QTABLE SUBREGION COMPRESSION")
+            print(f"{'='*60}")
+
+            # PHASE 1: Analyze all subregions and design shared quantization table
+            shared_qtable = analyze_subregions_frequency_content(
+                region_image, 
+                segment_boundaries, 
+                roi_segments, 
+                bbox_mask
+            )
+
+            print(f"\n  Shared quantization table (8x8):")
+            for i in range(8):
+                row_str = "    " + " ".join(f"{val:3d}" for val in shared_qtable[i])
+                print(row_str)
+
+            # PHASE 2: Compress all subregions using shared table
+            subregion_results = []
+            subregion_reconstructed = np.zeros_like(region_image)
+            total_subregion_original = 0
+            total_subregion_compressed = len(shared_qtable.tobytes())  # Start with table size
+            subregion_psnrs = []
+
+            print(f"\n  Compressing {len(segment_boundaries)} subregions with shared table...")
+
+            for seg_idx, seg_data in enumerate(segment_boundaries):
+                segment_id = seg_data.get('segment_id', seg_idx)
+                segment_mask = (roi_segments == segment_id) & bbox_mask
+                
+                segment_pixels = np.sum(segment_mask)
+                if segment_pixels < 64:  # Need at least one 8x8 block
+                    continue
+                
+                print(f"\n    Segment {seg_idx+1}/{len(segment_boundaries)} (ID: {segment_id}):")
+                print(f"      Pixels: {segment_pixels:,}")
+                
+                # Compress with shared quantization table
+                seg_compression = compress_subregion_with_shared_qtable(
+                    region_image, 
+                    segment_mask, 
+                    shared_qtable,
+                    quality_factor=75
+                )
+                
+                if seg_compression is None:
+                    continue
+                
+                # Reconstruct
+                seg_reconstructed = reconstruct_subregion_with_shared_qtable(
+                    seg_compression,
+                    shared_qtable,
+                    region_image.shape,  # Pass the full shape
+                    quality_factor=25
+                )
+
+                # Fill border gaps
+                seg_reconstructed = fill_border_gaps(seg_reconstructed, segment_mask, region_image)
+                                
+                # Calculate PSNR
+                rows, cols = np.where(segment_mask)
+                if len(rows) > 0:
+                    # Extract only the overlapping area
+                    seg_recon_masked = np.zeros_like(region_image)
+                    seg_recon_masked[rows, cols] = seg_reconstructed[rows, cols]
+                    
+                    # Simple PSNR calculation
+                    original_vals = region_image[rows, cols].flatten().astype(float)
+                    recon_vals = seg_recon_masked[rows, cols].flatten().astype(float)
+                    
+                    mse = np.mean((original_vals - recon_vals) ** 2)
+                    seg_psnr = 10 * np.log10(255*255/mse) if mse > 0 else float('inf')
+                else:
+                    seg_psnr = 0
+                
+                # Update reconstructed image
+                subregion_reconstructed[segment_mask] = seg_reconstructed[segment_mask]
+                
+                # Store results
+                subregion_results.append({
+                    'segment_id': segment_id,
+                    'pixels': segment_pixels,
+                    'original_bytes': seg_compression['original_size'],
+                    'compressed_bytes': seg_compression['compressed_size'],
+                    'ratio': seg_compression['compression_ratio'],
+                    'psnr': seg_psnr,
+                    'num_blocks': seg_compression.get('num_blocks', 0)
+                })
+                
+                total_subregion_original += seg_compression['original_size']
+                total_subregion_compressed += seg_compression['compressed_size']
+                subregion_psnrs.append(seg_psnr)
+                
+                # Progress
+                if (seg_idx + 1) % 5 == 0 or (seg_idx + 1) == len(segment_boundaries):
+                    print(f"    Processed {seg_idx + 1}/{len(segment_boundaries)} segments")
+
+            # Calculate overall stats (include shared table in compressed size)
+            if total_subregion_compressed > 0:
+                subregion_ratio = total_subregion_original / total_subregion_compressed
+                avg_psnr = np.mean(subregion_psnrs) if subregion_psnrs else 0
+                
+                # Overall PSNR
+                overall_psnr = calculate_psnr_for_region_correct(
+                    region_image, subregion_reconstructed, bbox_mask
+                )
+                
+                print(f"\n  SHARED QTABLE COMPRESSION SUMMARY:")
+                print(f"    Shared table size: {len(shared_qtable.tobytes()):,} bytes")
+                print(f"    Total original: {total_subregion_original:,} bytes")
+                print(f"    Total compressed (including table): {total_subregion_compressed:,} bytes")
+                print(f"    Overall ratio: {subregion_ratio:.2f}:1")
+                print(f"    Average segment PSNR: {avg_psnr:.2f} dB")
+                print(f"    Overall PSNR: {overall_psnr:.2f} dB")
+                
+                # Calculate savings
+                if len(subregion_results) > 1:
+                    # Without optimization: each segment would need its own table (64 bytes)
+                    naive_size = total_subregion_compressed + (len(subregion_results) - 1) * 64
+                    savings = naive_size - total_subregion_compressed
+                    print(f"    Storage savings from shared table: {savings:,} bytes")
+                
+                subregion_compression_results = {
+                    'method': 'Shared QTable',
+                    'original_bytes': total_subregion_original,
+                    'compressed_bytes': total_subregion_compressed,
+                    'ratio': subregion_ratio,
+                    'avg_segment_psnr': avg_psnr,
+                    'overall_psnr': overall_psnr,
+                    'reconstructed': subregion_reconstructed,
+                    'segment_results': subregion_results,
+                    'shared_qtable': shared_qtable
+                }
+            else:
+                print(f"  ❌ No subregions were successfully compressed")
+                subregion_compression_results = None
+
+
+
+
+
+
+
+
+
+
+
+            # Calculate overall stats
+            if total_subregion_compressed > 0 and len(subregion_psnrs) > 0:
+                subregion_ratio = total_subregion_original / total_subregion_compressed
+                avg_subregion_psnr = np.mean(subregion_psnrs)
+                
+                # Calculate overall PSNR
+                subregion_overall_psnr = calculate_psnr_for_region_correct(
+                    region_image, 
+                    subregion_reconstructed, 
+                    bbox_mask
+                )
+                
+                print(f"\n  FIXED SUBREGION COMPRESSION SUMMARY:")
+                print(f"    Total original: {total_subregion_original:,} bytes")
+                print(f"    Total compressed: {total_subregion_compressed:,} bytes")
+                print(f"    Overall ratio: {subregion_ratio:.2f}:1")
+                print(f"    Average segment PSNR: {avg_subregion_psnr:.2f} dB")
+                print(f"    Overall reconstruction PSNR: {subregion_overall_psnr:.2f} dB")
+                
+                # Show PSNR improvement analysis
+                if avg_subregion_psnr < 20:
+                    print(f"\n  ⚠️  PSNR ANALYSIS:")
+                    print(f"    Current PSNR ({avg_subregion_psnr:.1f} dB) is too low.")
+                    print(f"    Target should be >20 dB for acceptable quality.")
+                    print(f"    Issues detected: Color mismatch in reconstruction.")
+                
+                subregion_compression_results = {
+                    'method': 'Fixed Subregion',
+                    'original_bytes': total_subregion_original,
+                    'compressed_bytes': total_subregion_compressed,
+                    'ratio': subregion_ratio,
+                    'avg_segment_psnr': avg_subregion_psnr,
+                    'overall_psnr': subregion_overall_psnr,
+                    'reconstructed': subregion_reconstructed,
+                    'segment_results': subregion_results,
+                    #'compression_methods': compression_methods
+                }
+            else:
+                print(f"  ❌ No successful compressions")
+                subregion_compression_results = None
+
+
+
+            # ==============================================
+            # SIMPLIFIED DEBUG VISUALIZATION (No figure modification)
+            # ==============================================
+            if subregion_results and len(subregion_results) > 0:
+                print(f"\n  DEBUG: MEAN COLOR ANALYSIS")
+                
+                # Create a simple debug visualization
+                debug_image = np.zeros_like(region_image)
+                
+                for seg in subregion_results[:min(5, len(subregion_results))]:  # Show first 5 segments or less
+                    segment_id = seg['segment_id']
+                    segment_mask = (roi_segments == segment_id) & bbox_mask
+                    
+                    if seg.get('mean_color'):
+                        mean_color = np.array(seg['mean_color'], dtype=np.uint8)
+                        rows, cols = np.where(segment_mask)
+                        
+                        if len(rows) > 0:
+                            # Show what we're reconstructing
+                            debug_image[rows, cols] = mean_color
+                            
+                            # Get actual average from original
+                            actual_pixels = region_image[rows, cols]
+                            actual_mean = np.mean(actual_pixels, axis=0).astype(np.uint8)
+                            
+                            print(f"    Segment {segment_id}:")
+                            print(f"      Computed mean: {mean_color}")
+                            print(f"      Actual mean: {actual_mean}")
+                            print(f"      Difference: {np.abs(mean_color - actual_mean)}")
+                            print(f"      Match within tolerance: {np.allclose(mean_color, actual_mean, atol=10)}")
+                
+                # Create a NEW figure for debug visualization (don't modify existing one)
+                if np.any(debug_image > 0):  # Only create if we have data
+                    try:
+                        fig_debug, axes_debug = plt.subplots(1, 3, figsize=(15, 5))
+                        
+                        # Original segment
+                        axes_debug[0].imshow(region_image)
+                        axes_debug[0].set_title('Original Region')
+                        axes_debug[0].axis('off')
+                        
+                        # Mean color reconstruction
+                        axes_debug[1].imshow(debug_image)
+                        axes_debug[1].set_title('Mean Color Reconstruction (Debug)')
+                        axes_debug[1].axis('off')
+                        
+                        # Difference
+                        diff = np.abs(region_image.astype(float) - debug_image.astype(float))
+                        diff_display = np.mean(diff, axis=2) if diff.shape[2] == 3 else diff
+                        im = axes_debug[2].imshow(diff_display, cmap='hot', vmin=0, vmax=100)
+                        axes_debug[2].set_title('Color Difference (Mean vs Original)')
+                        axes_debug[2].axis('off')
+                        plt.colorbar(im, ax=axes_debug[2], fraction=0.046, pad=0.04)
+                        
+                        plt.suptitle('Debug: Mean Color Accuracy Check', fontsize=14)
+                        plt.tight_layout()
+                        plt.show()
+                    except Exception as e:
+                        print(f"  ⚠️  Debug visualization failed (non-critical): {e}")
+                
+                # Also show PSNR distribution
+                if len(subregion_psnrs) > 1:
+                    print(f"\n  PSNR DISTRIBUTION ACROSS SEGMENTS:")
+                    print(f"    Min: {min(subregion_psnrs):.1f} dB")
+                    print(f"    Max: {max(subregion_psnrs):.1f} dB")
+                    print(f"    Median: {np.median(subregion_psnrs):.1f} dB")
+                    print(f"    Std Dev: {np.std(subregion_psnrs):.1f} dB")
+                    
+                    # Check for very low PSNR segments
+                    low_psnr_segments = [(i, psnr) for i, psnr in enumerate(subregion_psnrs) if psnr < 15]
+                    if low_psnr_segments:
+                        print(f"  ⚠️  LOW PSNR SEGMENTS (<15 dB):")
+                        for idx, psnr in low_psnr_segments[:3]:  # Show first 3
+                            seg_id = subregion_results[idx]['segment_id']
+                            print(f"    Segment {seg_id}: {psnr:.1f} dB")
+
+            # ==============================================
+            # ADDITIONAL VISUALIZATION FOR HOMOGENEOUS REGIONS
+            # ==============================================
+
+            # In the visualization section, add method information
+            if subregion_compression_results and subregion_results:
+                # Create method visualization
+                method_visualization = np.zeros_like(region_image)
+                method_colors = {
+                    'mean_color': [0, 255, 0],  # Green for mean color
+                    'dct': [255, 0, 0],         # Red for DCT
+                    'texture_aware': [0, 0, 255]  # Blue for texture aware
+                }
+                
+                for seg in subregion_results:
+                    segment_id = seg['segment_id']
+                    segment_mask = (roi_segments == segment_id) & bbox_mask
+                    method = seg.get('method', 'dct')
+                    
+                    rows, cols = np.where(segment_mask)
+                    if len(rows) > 0:
+                        method_visualization[rows, cols] = method_colors.get(method, [255, 255, 255])
+                
+                # Create a SEPARATE figure for method visualization (don't modify existing one)
+                try:
+                    fig_methods, ax_methods = plt.subplots(figsize=(6, 5))
+                    ax_methods.imshow(method_visualization)
+                    ax_methods.set_title('Compression Methods\nGreen=Mean Color, Red=DCT, Blue=Texture', fontsize=11)
+                    ax_methods.axis('off')
+                    plt.tight_layout()
+                    plt.show()
+                except Exception as e:
+                    print(f"  ⚠️  Method visualization failed (non-critical): {e}")
+                
+                # Also show separate analysis of homogeneous segments
+                homogeneous_segments = [s for s in subregion_results if s.get('method') == 'mean_color']
+                dct_segments = [s for s in subregion_results if s.get('method') == 'dct']
+                texture_segments = [s for s in subregion_results if s.get('method') == 'texture_aware']
+                
+                if homogeneous_segments:
+                    print(f"\n  HOMOGENEOUS SEGMENTS ANALYSIS ({len(homogeneous_segments)} segments):")
+                    print(f"    Average homogeneity: {np.mean([s['homogeneity'] for s in homogeneous_segments]):.3f}")
+                    print(f"    Average ratio: {np.mean([s['ratio'] for s in homogeneous_segments]):.2f}:1")
+                    print(f"    Average PSNR: {np.mean([s['psnr'] for s in homogeneous_segments]):.2f} dB")
+                    
+                    # Show best homogeneous segment
+                    best_homo = max(homogeneous_segments, key=lambda x: x['ratio'])
+                    print(f"    Best homogeneous segment: ID={best_homo['segment_id']}, "
+                        f"Ratio={best_homo['ratio']:.2f}:1, PSNR={best_homo['psnr']:.2f} dB")
+                
+                if dct_segments:
+                    print(f"\n  COMPLEX SEGMENTS ANALYSIS ({len(dct_segments)} segments):")
+                    print(f"    Average homogeneity: {np.mean([s['homogeneity'] for s in dct_segments]):.3f}")
+                    print(f"    Average ratio: {np.mean([s['ratio'] for s in dct_segments]):.2f}:1")
+                    print(f"    Average PSNR: {np.mean([s['psnr'] for s in dct_segments]):.2f} dB")
+                
+                if texture_segments:
+                    print(f"\n  TEXTURE-AWARE SEGMENTS ANALYSIS ({len(texture_segments)} segments):")
+                    print(f"    Average ratio: {np.mean([s['ratio'] for s in texture_segments]):.2f}:1")
+                    print(f"    Average PSNR: {np.mean([s['psnr'] for s in texture_segments]):.2f} dB")
+
+
+
+
+
+
+
+
+
+
+            
+            # ==============================================
+            # 5. COMPREHENSIVE COMPARISON
+            # ==============================================
+            print(f"\n{'='*60}")
+            print(f"COMPREHENSIVE COMPARISON")
+            print(f"{'='*60}")
+            
+            # Create comparison table
+            print(f"\n  COMPRESSION METHODS COMPARISON:")
+            print(f"  {'Method':<20} {'Original':<12} {'Compressed':<12} {'Ratio':<10} {'PSNR':<10} {'BPP':<10}")
+            print(f"  {'-'*20} {'-'*12} {'-'*12} {'-'*10} {'-'*10} {'-'*10}")
+            
+            # ROI method
+            roi_bpp = (roi_compression_results['compressed_bytes'] * 8) / np.sum(bbox_mask)
+            print(f"  {'Direct ROI':<20} {roi_compression_results['original_bytes']:<12,} "
+                f"{roi_compression_results['compressed_bytes']:<12,} "
+                f"{roi_compression_results['ratio']:<10.2f} "
+                f"{roi_compression_results['psnr']:<10.2f} "
+                f"{roi_bpp:<10.2f}")
+            
+            # Subregion method (if available)
+            if subregion_compression_results:
+                subregion_bpp = (subregion_compression_results['compressed_bytes'] * 8) / np.sum(bbox_mask)
+                print(f"  {'Subregion':<20} {subregion_compression_results['original_bytes']:<12,} "
+                    f"{subregion_compression_results['compressed_bytes']:<12,} "
+                    f"{subregion_compression_results['ratio']:<10.2f} "
+                    f"{subregion_compression_results['overall_psnr']:<10.2f} "
+                    f"{subregion_bpp:<10.2f}")
+                
+                # Compare which is better
+                print(f"\n  COMPARISON ANALYSIS:")
+                
+                # Ratio comparison
+                if subregion_compression_results['ratio'] > roi_compression_results['ratio']:
+                    ratio_diff = subregion_compression_results['ratio'] - roi_compression_results['ratio']
+                    print(f"  ✅ Subregion compression gives BETTER ratio: +{ratio_diff:.2f}:1 better")
+                else:
+                    ratio_diff = roi_compression_results['ratio'] - subregion_compression_results['ratio']
+                    print(f"  ✅ Direct ROI compression gives BETTER ratio: +{ratio_diff:.2f}:1 better")
+                
+                # PSNR comparison
+                if subregion_compression_results['overall_psnr'] > roi_compression_results['psnr']:
+                    psnr_diff = subregion_compression_results['overall_psnr'] - roi_compression_results['psnr']
+                    print(f"  ✅ Subregion compression gives BETTER quality: +{psnr_diff:.2f} dB better")
+                else:
+                    psnr_diff = roi_compression_results['psnr'] - subregion_compression_results['overall_psnr']
+                    print(f"  ✅ Direct ROI compression gives BETTER quality: +{psnr_diff:.2f} dB better")
+                
+                # File size comparison
+                size_saving_roi = roi_compression_results['original_bytes'] - roi_compression_results['compressed_bytes']
+                size_saving_sub = subregion_compression_results['original_bytes'] - subregion_compression_results['compressed_bytes']
+                
+                if size_saving_sub > size_saving_roi:
+                    print(f"  ✅ Subregion compression saves MORE space: {size_saving_sub:,} vs {size_saving_roi:,} bytes")
+                else:
+                    print(f"  ✅ Direct ROI compression saves MORE space: {size_saving_roi:,} vs {size_saving_sub:,} bytes")
+            
+            # ==============================================
+            # 6. VISUAL COMPARISON OF ALL METHODS
+            # ==============================================
+            print(f"\n  VISUAL COMPARISON OF ALL METHODS:")
+            
+            # Create displays with gray background
             gray_bg = np.array([200, 200, 200], dtype=np.uint8)
+            
             original_display = region_image.copy()
-            content_display = content_reconstructed.copy()
+            roi_display = roi_compression_results['reconstructed'].copy()
             
             for c in range(3):
                 original_display[:, :, c] = np.where(bbox_mask, region_image[:, :, c], gray_bg[c])
-                content_display[:, :, c] = np.where(bbox_mask, content_reconstructed[:, :, c], gray_bg[c])
+                roi_display[:, :, c] = np.where(bbox_mask, roi_compression_results['reconstructed'][:, :, c], gray_bg[c])
             
-            fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+            # Create figure
+            n_methods = 2 if subregion_compression_results else 1
+            fig_width = 5 * (n_methods + 1)  # +1 for original
             
-            # 1. Original ROI only (with gray background)
+            fig, axes = plt.subplots(2, n_methods + 1, figsize=(fig_width, 8))
+            axes = axes.flatten()
+            
+            # Original
             axes[0].imshow(original_display)
-            axes[0].set_title(f'Original ROI\n{np.sum(bbox_mask):,} pixels\n{content_stats["original_bytes"]:,} bytes')
+            axes[0].set_title(f'Original ROI\n{np.sum(bbox_mask):,} pixels', fontsize=11)
             axes[0].axis('off')
             
-            # 2. Content-Reconstructed ROI only (with gray background)
-            axes[1].imshow(content_display)
-            axes[1].set_title(f'Content-Compressed\n{content_stats["compressed_bytes"]:,} bytes\nRatio: {content_stats["ratio"]:.2f}:1')
+            # Direct ROI
+            axes[1].imshow(roi_display)
+            axes[1].set_title(f'Direct ROI Compression\n'
+                            f'Ratio: {roi_compression_results["ratio"]:.2f}:1\n'
+                            f'PSNR: {roi_compression_results["psnr"]:.2f} dB', fontsize=11)
             axes[1].axis('off')
             
-            # 3. Side-by-side comparison
-            h, w = original_display.shape[:2]
-            composite = np.ones((h, w*2 + 20, 3), dtype=np.uint8) * 200  # Light gray background
+            # Subregion (if available)
+            if subregion_compression_results:
+                subregion_display = subregion_compression_results['reconstructed'].copy()
+                for c in range(3):
+                    subregion_display[:, :, c] = np.where(bbox_mask, subregion_compression_results['reconstructed'][:, :, c], gray_bg[c])
+                
+                axes[2].imshow(subregion_display)
+                axes[2].set_title(f'Subregion Compression\n'
+                                f'Ratio: {subregion_compression_results["ratio"]:.2f}:1\n'
+                                f'PSNR: {subregion_compression_results["overall_psnr"]:.2f} dB', fontsize=11)
+                axes[2].axis('off')
             
-            # Place original on left, reconstructed on right
-            composite[:, :w] = original_display
-            composite[:, w+20:] = content_display
+            # Difference maps
+            start_idx = n_methods + 1
             
-            axes[2].imshow(composite)
-            axes[2].set_title(f'Side-by-side\nPSNR: {content_psnr:.2f} dB')
-            axes[2].axis('off')
-            axes[2].axvline(x=w, color='black', linewidth=2, alpha=0.5)  # Dividing line
+            # ROI difference
+            diff_roi = np.abs(region_image.astype(np.float32) - roi_compression_results['reconstructed'].astype(np.float32))
+            diff_roi_masked = diff_roi * bbox_mask[:, :, np.newaxis].astype(np.float32)
             
-            # 4. Difference (error) map ONLY in ROI area
-            diff = np.abs(region_image.astype(np.float32) - content_reconstructed.astype(np.float32))
-            diff_roi = diff * bbox_mask[:, :, np.newaxis].astype(np.float32)
+            axes[start_idx].imshow(np.mean(diff_roi_masked, axis=2), cmap='hot')
+            axes[start_idx].set_title(f'Direct ROI Error\nMax: {np.max(diff_roi_masked):.1f}', fontsize=11)
+            axes[start_idx].axis('off')
             
-            # Create heatmap display
-            diff_display = np.zeros_like(region_image, dtype=np.uint8)
-            if np.max(diff_roi) > 0:
-                diff_normalized = (diff_roi / np.max(diff_roi) * 255).astype(np.uint8)
-                diff_display = diff_normalized
+            # Subregion difference (if available)
+            if subregion_compression_results:
+                diff_sub = np.abs(region_image.astype(np.float32) - subregion_compression_results['reconstructed'].astype(np.float32))
+                diff_sub_masked = diff_sub * bbox_mask[:, :, np.newaxis].astype(np.float32)
+                
+                axes[start_idx + 1].imshow(np.mean(diff_sub_masked, axis=2), cmap='hot')
+                axes[start_idx + 1].set_title(f'Subregion Error\nMax: {np.max(diff_sub_masked):.1f}', fontsize=11)
+                axes[start_idx + 1].axis('off')
             
-            axes[3].imshow(diff_display, cmap='hot')
-            max_error = np.max(diff_roi) if np.any(bbox_mask) else 0
-            axes[3].set_title(f'Error in ROI\nMax: {max_error:.1f}\nAvg: {np.mean(diff_roi[bbox_mask]):.1f}')
-            axes[3].axis('off')
-            
-            plt.suptitle(f'ROI Region {i+1} - Content-Only Compression (ROI Area Focus)', fontsize=14, fontweight='bold')
+            plt.suptitle(f'ROI Region {i+1} - Compression Methods Comparison', fontsize=14, fontweight='bold')
             plt.tight_layout()
             plt.show()
             
             # ==============================================
-            # 4B. ORIGINAL: COMPRESS WITH BORDERS/METADATA (for comparison)
+            # 7. DETAILED SUBREGION ANALYSIS
             # ==============================================
-            print(f"\n  COMPRESSING ROI WITH BORDERS (original method)...")
-            
-            # Calculate original size of the ROI
-            roi_pixels = np.sum(bbox_mask)
-            roi_original_bytes = roi_pixels * 3
-            
-            print(f"  ROI pixels: {roi_pixels:,}")
-            print(f"  Original size: {roi_original_bytes:,} bytes")
-            
-            # Compress the entire ROI (not individual segments)
-            roi_compressed, roi_metadata = compress_segment_guaranteed_working(
-                bbox_mask,  # Use the ROI mask
-                region_image,
-                quality=25
-            )
-            
-            if roi_compressed is None or roi_metadata is None:
-                print(f"  ❌ Failed to compress ROI region")
-                # Continue with content-only results
-            else:
-                # Calculate compressed size
-                roi_compressed_size = calculate_real_compressed_size(roi_compressed)
-                roi_compression_ratio = roi_original_bytes / roi_compressed_size if roi_compressed_size > 0 else 0
+            if subregion_compression_results and subregion_results:
+                print(f"\n  DETAILED SUBREGION ANALYSIS:")
+                print(f"  {'ID':<5} {'Pixels':<10} {'Original':<12} {'Compressed':<12} {'Ratio':<10} {'PSNR':<10}")
+                print(f"  {'-'*5} {'-'*10} {'-'*12} {'-'*12} {'-'*10} {'-'*10}")
                 
-                print(f"  Compressed size: {roi_compressed_size:,} bytes")
-                print(f"  Compression ratio: {roi_compression_ratio:.2f}:1")
+                for seg in subregion_results[:10]:  # Show first 10 segments
+                    print(f"  {seg['segment_id']:<5} {seg['pixels']:<10,} "
+                        f"{seg['original_bytes']:<12,} {seg['compressed_bytes']:<12,} "
+                        f"{seg['ratio']:<10.2f} {seg['psnr']:<10.2f}")
                 
-                # ==============================================
-                # 5. DECOMPRESS AND ANALYZE QUALITY
-                # ==============================================
-                print(f"\n  DECOMPRESSING AND ANALYZING...")
+                if len(subregion_results) > 10:
+                    print(f"  ... and {len(subregion_results) - 10} more segments")
                 
-                # Decompress the ROI
-                roi_reconstructed = decompress_segment_dct(
-                    roi_compressed,
-                    roi_metadata,
-                    original_region_shape=region_image.shape
-                )
+                # Segment statistics
+                seg_ratios = [s['ratio'] for s in subregion_results]
+                seg_psnrs = [s['psnr'] for s in subregion_results]
                 
-                if roi_reconstructed is not None:
-                    # CORRECT PSNR calculation (ROI area only)
-                    roi_psnr = calculate_psnr_for_region_correct(region_image, roi_reconstructed, bbox_mask)
-                    
-                    print(f"  ROI PSNR: {roi_psnr:.2f} dB")
-                    
-                    # ==============================================
-                    # 6. COMPARISON: CONTENT-ONLY vs WITH-BORDERS
-                    # ==============================================
-                    print(f"\n  COMPARISON: Content-Only vs With-Borders")
-                    print(f"  {'Method':<20} {'Original':<12} {'Compressed':<12} {'Ratio':<10} {'PSNR':<10}")
-                    print(f"  {'-'*20} {'-'*12} {'-'*12} {'-'*10} {'-'*10}")
-                    print(f"  {'Content-Only':<20} {content_stats['original_bytes']:<12,} "
-                        f"{content_stats['compressed_bytes']:<12,} "
-                        f"{content_stats['ratio']:<10.2f} {content_psnr:<10.2f}")
-                    print(f"  {'With-Borders':<20} {roi_original_bytes:<12,} "
-                        f"{roi_compressed_size:<12,} "
-                        f"{roi_compression_ratio:<10.2f} {roi_psnr:<10.2f}")
-                    
-                    # Show both methods comparison (ROI area only)
-                    print(f"\n  VISUAL COMPARISON OF BOTH METHODS (ROI Area):")
-                    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-                    
-                    # Create displays with gray background
-                    roi_display = roi_reconstructed.copy()
-                    for c in range(3):
-                        roi_display[:, :, c] = np.where(bbox_mask, roi_reconstructed[:, :, c], gray_bg[c])
-                    
-                    # 1. Original ROI
-                    axes[0].imshow(original_display)
-                    axes[0].set_title('Original ROI')
-                    axes[0].axis('off')
-                    
-                    # 2. Content-Only
-                    axes[1].imshow(content_display)
-                    axes[1].set_title(f'Content-Only\nRatio: {content_stats["ratio"]:.2f}:1')
-                    axes[1].axis('off')
-                    
-                    # 3. With-Borders
-                    axes[2].imshow(roi_display)
-                    axes[2].set_title(f'With-Borders\nRatio: {roi_compression_ratio:.2f}:1')
-                    axes[2].axis('off')
-                    
-                    # 4. PSNR Comparison Bar Chart
-                    methods = ['Content-Only', 'With-Borders']
-                    psnrs = [content_psnr, roi_psnr]
-                    ratios = [content_stats['ratio'], roi_compression_ratio]
-                    
-                    # Create dual y-axis plot
-                    ax4 = axes[3]
-                    x = np.arange(len(methods))
-                    width = 0.35
-                    
-                    # PSNR bars
-                    bars1 = ax4.bar(x - width/2, psnrs, width, label='PSNR (dB)', color='skyblue', alpha=0.8)
-                    ax4.set_ylabel('PSNR (dB)', color='skyblue')
-                    ax4.tick_params(axis='y', labelcolor='skyblue')
-                    
-                    # Ratio bars (secondary axis)
-                    ax4_ratio = ax4.twinx()
-                    bars2 = ax4_ratio.bar(x + width/2, ratios, width, label='Ratio', color='lightcoral', alpha=0.8)
-                    ax4_ratio.set_ylabel('Compression Ratio', color='lightcoral')
-                    ax4_ratio.tick_params(axis='y', labelcolor='lightcoral')
-                    
-                    ax4.set_xlabel('Compression Method')
-                    ax4.set_xticks(x)
-                    ax4.set_xticklabels(methods)
-                    ax4.set_title('Quality vs Compression')
-                    ax4.grid(True, alpha=0.3)
-                    
-                    # Add value labels on bars
-                    for bar in bars1:
-                        height = bar.get_height()
-                        ax4.text(bar.get_x() + bar.get_width()/2., height + 0.5,
-                                f'{height:.1f}', ha='center', va='bottom', fontsize=9)
-                    
-                    for bar in bars2:
-                        height = bar.get_height()
-                        ax4_ratio.text(bar.get_x() + bar.get_width()/2., height + 0.05,
-                                    f'{height:.2f}', ha='center', va='bottom', fontsize=9)
-                    
-                    # Combine legends
-                    lines1, labels1 = ax4.get_legend_handles_labels()
-                    lines2, labels2 = ax4_ratio.get_legend_handles_labels()
-                    ax4.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
-                    
-                    plt.suptitle(f'ROI Region {i+1} - Compression Methods Comparison', fontsize=14, fontweight='bold')
-                    plt.tight_layout()
-                    plt.show()
+                print(f"\n  SEGMENT STATISTICS:")
+                print(f"    Best ratio: {max(seg_ratios):.2f}:1 (Segment {subregion_results[np.argmax(seg_ratios)]['segment_id']})")
+                print(f"    Worst ratio: {min(seg_ratios):.2f}:1 (Segment {subregion_results[np.argmin(seg_ratios)]['segment_id']})")
+                print(f"    Best PSNR: {max(seg_psnrs):.2f} dB (Segment {subregion_results[np.argmax(seg_psnrs)]['segment_id']})")
+                print(f"    Worst PSNR: {min(seg_psnrs):.2f} dB (Segment {subregion_results[np.argmin(seg_psnrs)]['segment_id']})")
+                print(f"    Ratio std dev: {np.std(seg_ratios):.2f}")
+                print(f"    PSNR std dev: {np.std(seg_psnrs):.2f} dB")
+                
+                # Plot segment performance
+                fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+                
+                # Ratio histogram
+                axes[0].hist(seg_ratios, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+                axes[0].axvline(np.mean(seg_ratios), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(seg_ratios):.2f}')
+                axes[0].set_xlabel('Compression Ratio', fontsize=11)
+                axes[0].set_ylabel('Number of Segments', fontsize=11)
+                axes[0].set_title('Segment Compression Ratio Distribution', fontsize=12)
+                axes[0].legend()
+                axes[0].grid(True, alpha=0.3)
+                
+                # PSNR histogram
+                axes[1].hist(seg_psnrs, bins=20, alpha=0.7, color='lightgreen', edgecolor='black')
+                axes[1].axvline(np.mean(seg_psnrs), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(seg_psnrs):.2f} dB')
+                axes[1].set_xlabel('PSNR (dB)', fontsize=11)
+                axes[1].set_ylabel('Number of Segments', fontsize=11)
+                axes[1].set_title('Segment Quality Distribution', fontsize=12)
+                axes[1].legend()
+                axes[1].grid(True, alpha=0.3)
+                
+                plt.suptitle(f'ROI Region {i+1} - Segment Performance Analysis', fontsize=13, fontweight='bold')
+                plt.tight_layout()
+                plt.show()
             
             # ==============================================
-            # 7. SAVE RESULTS DECISION
+            # 8. FINAL SUMMARY AND SAVE OPTIONS
             # ==============================================
-            print(f"\n  SUMMARY FOR ROI REGION {i+1}:")
-            
-            # Determine which method worked better
-            if content_stats['ratio'] > 1.0:
-                print(f"  ✅ CONTENT-ONLY: Compression achieved!")
-                print(f"     Saved {content_stats['original_bytes'] - content_stats['compressed_bytes']:,} bytes")
-                print(f"     Quality: {content_psnr:.2f} dB PSNR")
-                
-                if 'roi_compression_ratio' in locals() and roi_compression_ratio > content_stats['ratio']:
-                    print(f"  ⚠️ With-Borders gave better ratio ({roi_compression_ratio:.2f}:1 vs {content_stats['ratio']:.2f}:1)")
-                    print(f"     But With-Borders PSNR: {roi_psnr:.2f} dB vs Content-Only: {content_psnr:.2f} dB")
-                elif 'roi_compression_ratio' in locals() and roi_compression_ratio <= 1.0:
-                    print(f"  ❌ With-Borders failed: No compression (ratio: {roi_compression_ratio:.2f}:1)")
-            else:
-                print(f"  ❌ NO COMPRESSION ACHIEVED in either method")
-                print(f"     Content-only increased size by {content_stats['compressed_bytes'] - content_stats['original_bytes']:,} bytes")
-                if 'roi_compression_ratio' in locals():
-                    print(f"     With-Borders ratio: {roi_compression_ratio:.2f}:1")
-            
-            """# Ask user if they want to save
-            save_option = input(f"\n  Save results for ROI Region {i+1}? (y/n/skip all): ").lower()
-            
-            if save_option == 'y':
-                # Save comparison image
-                save_comparison_image(
-                    original_display,  # Use the ROI-only display
-                    content_display,   # Use the ROI-only display
-                    region_idx=i+1,
-                    ratio=content_stats['ratio'],
-                    psnr=content_psnr,
-                    method='content_only'
-                )
-                
-                # Save compression data
-                save_compression_data = {
-                    'region_idx': i+1,
-                    'region_bbox': region['bbox'],
-                    'region_shape': region_image.shape,
-                    'mask_pixels': int(roi_pixels),
-                    'content_only': {
-                        'original_bytes': int(content_stats['original_bytes']),
-                        'compressed_bytes': int(content_stats['compressed_bytes']),
-                        'compression_ratio': float(content_stats['ratio']),
-                        'psnr': float(content_psnr),
-                        'bpp': float(content_stats.get('bpp', 0))
-                    }
-                }
-                
-                # Add with-borders data if available
-                if 'roi_compression_ratio' in locals():
-                    save_compression_data['with_borders'] = {
-                        'original_bytes': int(roi_original_bytes),
-                        'compressed_bytes': int(roi_compressed_size),
-                        'compression_ratio': float(roi_compression_ratio),
-                        'psnr': float(roi_psnr)
-                    }
-                
-                import json
-                filename = f'roi_region_{i+1}_compression_results.json'
-                with open(filename, 'w') as f:
-                    json.dump(save_compression_data, f, indent=2)
-                
-                print(f"  Results saved to: {filename}")
-            
-            elif save_option == 'skip all':
-                print(f"  Skipping remaining regions...")
-                break
-            
             print(f"\n{'='*60}")
-            print(f"FINISHED ROI REGION {i+1}")
-            print(f"{'='*60}\n")"""
-
-        # ==============================================
-        # END OF ALL ROI REGIONS
-        # ==============================================
-        print(f"\n{'='*60}")
-        print(f"PROCESSED ALL {len(roi_regions)} ROI REGIONS")
-        print(f"{'='*60}")
+            print(f"FINAL SUMMARY - ROI REGION {i+1}")
+            print(f"{'='*60}")
+            
+            # Determine best method
+            if subregion_compression_results:
+                if subregion_compression_results['ratio'] > roi_compression_results['ratio']:
+                    best_method = "SUBREGION COMPRESSION"
+                    reason = f"Better compression ratio ({subregion_compression_results['ratio']:.2f}:1 vs {roi_compression_results['ratio']:.2f}:1)"
+                elif subregion_compression_results['overall_psnr'] > roi_compression_results['psnr']:
+                    best_method = "SUBREGION COMPRESSION"
+                    reason = f"Better quality ({subregion_compression_results['overall_psnr']:.2f} dB vs {roi_compression_results['psnr']:.2f} dB)"
+                else:
+                    best_method = "DIRECT ROI COMPRESSION"
+                    reason = f"Better overall performance"
+            else:
+                best_method = "DIRECT ROI COMPRESSION"
+                reason = "Subregion compression failed or not available"
+            
+            print(f"  RECOMMENDED METHOD: {best_method}")
+            print(f"  Reason: {reason}")
+            
+            if roi_compression_results['ratio'] > 1.0:
+                print(f"  ✅ Direct ROI compression achieved: {roi_compression_results['ratio']:.2f}:1 ratio")
+                print(f"     Saved {roi_compression_results['original_bytes'] - roi_compression_results['compressed_bytes']:,} bytes")
+            else:
+                print(f"  ❌ Direct ROI compression FAILED: Ratio {roi_compression_results['ratio']:.2f}:1 (file size increased)")
+            
+            if subregion_compression_results:
+                if subregion_compression_results['ratio'] > 1.0:
+                    print(f"  ✅ Subregion compression achieved: {subregion_compression_results['ratio']:.2f}:1 ratio")
+                    print(f"     Saved {subregion_compression_results['original_bytes'] - subregion_compression_results['compressed_bytes']:,} bytes")
+                else:
+                    print(f"  ❌ Subregion compression FAILED: Ratio {subregion_compression_results['ratio']:.2f}:1")
+            
 
 
 
