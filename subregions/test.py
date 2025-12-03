@@ -4069,6 +4069,36 @@ def fill_border_gaps(reconstructed_image, segment_mask, region_image):
     
     return reconstructed_image
 
+def calculate_minimal_compressed_size(seg_compression):
+    """
+    Calculate ACTUAL minimal storage size for a subregion.
+    Only counts what we actually need to store.
+    """
+    # 1. ext_bbox: 4 integers × 2 bytes = 8 bytes
+    size = 8
+    
+    # 2. For each block
+    for block_data in seg_compression['compressed_blocks']:
+        # Block position: i, j (2 × 2 bytes = 4 bytes)
+        size += 4
+        
+        block_compressed = block_data['data']
+        
+        # 3. For each channel (Y, Cb, Cr)
+        for ch in range(3):
+            channel_key = f'channel_{ch}'
+            if channel_key in block_compressed:
+                channel_data = block_compressed[channel_key]
+                
+                # Number of coefficients: 1 byte
+                size += 1
+                
+                num_coeffs = len(channel_data.get('values', []))
+                
+                # For each coefficient: index (1 byte) + value (2 bytes) = 3 bytes
+                size += num_coeffs * 3
+    
+    return size
 
 
 
@@ -4103,11 +4133,12 @@ def fill_border_gaps(reconstructed_image, segment_mask, region_image):
 
 
 if __name__ == "__main__":
-    image_name = 'images/kauai.jpg'
+
+    image_name = 'images/Lenna.webp'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    enhanced_image_rgb=get_enhanced_image(image_rgb, shadow_threshold=100)
-    #enhanced_image_rgb=image_rgb
+    #enhanced_image_rgb=get_enhanced_image(image_rgb, shadow_threshold=100)
+    enhanced_image_rgb=image_rgb
 
     print(f"Size: {image_rgb.size}")
     factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
@@ -4200,110 +4231,6 @@ if __name__ == "__main__":
     roi_subregions=[]
     nonroi_subregions=[]
 
-
-    """for region in roi_regions:
-
-        # Apply SLIC only to the bounding box region
-        minr, minc, maxr, maxc = region['bbox']
-        
-        # Extract the region from the original image
-        bbox_region = image_rgb[minr:maxr, minc:maxc]
-
-        region_image=bbox_region
-        #should_split_roi, roi_score = should_split(bbox_region)
-        roi_score=calculate_split_score(bbox_region)
-
-        print(f"roi_score {roi_score}")
-
-        if roi_score==0: continue
-
-            # Apply SLIC only on ROI regions
-        roi_segments = slic(bbox_region, 
-                        n_segments=math.ceil(roi_score*2),  # Adjust based on your needs
-                        compactness=10,
-                        sigma=1,
-                        mask=region["bbox_mask"])  # This ensures SLIC only works on ROI areas
-        
-        roi_segments, texture_map = enhanced_slic_with_texture(bbox_region, math.ceil(roi_score*2))
-
-        visualize_split_analysis(region_image, overall_score, color_score, texture_score, optimal_segments):"""
-    
-
-    """    
-    for i, region in enumerate(roi_regions):
-        # Apply SLIC only to the bounding box region
-        minr, minc, maxr, maxc = region['bbox']
-        
-        # Extract the region from the original image
-        bbox_region = image_rgb[minr:maxr, minc:maxc]
-        bbox_mask = region['bbox_mask']  # This masks only the actual irregular region
-
-        region_image = bbox_region
-        
-        # Calculate split score ONLY on the irregular region (using the mask)
-        overall_score, color_score, texture_score = calculate_split_score(bbox_region, bbox_mask)
-        
-        print(f"Region {i+1}:")
-        print(f"  Overall score: {overall_score:.3f}")
-        print(f"  Color score: {color_score:.3f}")
-        print(f"  Texture score: {texture_score:.3f}")
-
-        #if overall_score == 0: 
-        #    continue
-
-        window =math.ceil( math.ceil(math.log(bbox_region.size, 10)) * math.log(bbox_region.size) )
-        print(f"Window: {window} px")
-        normalized_overall_score=normalize_result(overall_score, window)
-        optimal_segments=math.ceil(normalized_overall_score)
-        
-        # Calculate optimal segments based on score
-        #optimal_segments = calculate_optimal_segments(overall_score, region['area'], min_segments=1, max_segments=factor)
-        if optimal_segments<=0: optimal_segments=1
-
-        roi_segments, texture_map = enhanced_slic_with_texture(bbox_region, n_segments=optimal_segments)
-        
-        # Visualize
-        visualize_split_analysis(
-            region_image=region_image,
-            overall_score=overall_score,
-            color_score=color_score, 
-            texture_score=texture_score,
-            optimal_segments=optimal_segments
-        )
-
-        # Display SLIC results
-        plt.figure(figsize=(15, 5))
-
-        plt.subplot(1, 4, 1)
-        plt.imshow(region_image)
-        plt.title(f'ROI Region {i+1}')
-        plt.axis('off')
-
-        plt.subplot(1, 4, 2)
-        # Show segments only within the irregular region
-        segments_display = roi_segments.copy()
-        segments_display[~bbox_mask] = 0  # Set background to 0
-        plt.imshow(segments_display, cmap='nipy_spectral')
-        plt.title(f'SLIC Segments: {roi_segments.max()}')
-        plt.axis('off')
-
-        plt.subplot(1, 4, 3)
-        # Create boundaries only within the irregular region
-        boundaries_image = mark_boundaries(bbox_region, roi_segments)
-        boundaries_image[~bbox_mask] = 0  # Set background to black
-        plt.imshow(boundaries_image)
-        plt.title('SLIC Boundaries (Region Only)')
-        plt.axis('off')
-
-        plt.subplot(1, 4, 4)
-        plt.imshow(texture_map)
-        plt.title('texture_map')
-        plt.axis('off')
-
-        plt.tight_layout()
-        plt.show()
-
-    """
 
 
 
@@ -4503,115 +4430,32 @@ if __name__ == "__main__":
                 'reconstructed': content_reconstructed
             }
             
-            # ==============================================
-            # 4B. SUBREGION COMPRESSION (Individual SLIC Segments)
-            # ==============================================
-            """print(f"\n{'='*60}")
-            print(f"METHOD 2: SUBREGION COMPRESSION ({len(segment_boundaries)} segments)")
-            print(f"{'='*60}")
-            
-            subregion_results = []
-            subregion_reconstructed = np.zeros_like(region_image)
-            
-            total_subregion_original = 0
-            total_subregion_compressed = 0
-            subregion_psnrs = []
-            
-            print(f"  Compressing individual segments...")
-            
-            for seg_idx, seg_data in enumerate(segment_boundaries):
-                segment_id = seg_data.get('segment_id', seg_idx)
-                segment_mask = (roi_segments == segment_id) & bbox_mask
-                
-                segment_pixels = np.sum(segment_mask)
-                if segment_pixels == 0:
-                    continue
-                
-                print(f"    Segment {seg_idx+1}/{len(segment_boundaries)} (ID: {segment_id}):")
-                print(f"      Pixels: {segment_pixels:,}")
-                
-                # Compress this segment
-                seg_compression = compress_roi_content_only(
-                    segment_mask,
-                    region_image,
-                    quality=75
-                )
-                
-                if seg_compression is None:
-                    print(f"      ❌ Failed to compress")
-                    continue
-                
-                # Decompress segment
-                seg_reconstructed = reconstruct_roi_content(
-                    seg_compression['compressed_coefficients'],
-                    region_image.shape,
-                    segment_mask
-                )
-                
-                if seg_reconstructed is not None:
-                    # Calculate segment PSNR
-                    seg_psnr = calculate_psnr_for_region_correct(
-                        region_image, 
-                        seg_reconstructed, 
-                        segment_mask
-                    )
-                    
-                    # Update totals
-                    total_subregion_original += seg_compression['original_size']
-                    total_subregion_compressed += seg_compression['compressed_size']
-                    subregion_psnrs.append(seg_psnr)
-                    
-                    # Place in reconstructed image
-                    subregion_reconstructed[segment_mask] = seg_reconstructed[segment_mask]
-                    
-                    # Store segment results
-                    subregion_results.append({
-                        'segment_id': segment_id,
-                        'pixels': segment_pixels,
-                        'original_bytes': seg_compression['original_size'],
-                        'compressed_bytes': seg_compression['compressed_size'],
-                        'ratio': seg_compression['compression_ratio'],
-                        'psnr': seg_psnr
-                    })
-                    
-                    print(f"      Compressed: {seg_compression['compressed_size']:,} bytes")
-                    print(f"      Ratio: {seg_compression['compression_ratio']:.2f}:1")
-                    print(f"      PSNR: {seg_psnr:.2f} dB")
-            
-            # Calculate overall subregion compression stats
-            if total_subregion_compressed > 0:
-                subregion_ratio = total_subregion_original / total_subregion_compressed
-                avg_subregion_psnr = np.mean(subregion_psnrs) if subregion_psnrs else 0
-                
-                # Calculate overall PSNR for subregion reconstruction
-                subregion_overall_psnr = calculate_psnr_for_region_correct(
-                    region_image, 
-                    subregion_reconstructed, 
-                    bbox_mask
-                )
-                
-                print(f"\n  SUBREGION COMPRESSION SUMMARY:")
-                print(f"    Total original: {total_subregion_original:,} bytes")
-                print(f"    Total compressed: {total_subregion_compressed:,} bytes")
-                print(f"    Overall ratio: {subregion_ratio:.2f}:1")
-                print(f"    Average segment PSNR: {avg_subregion_psnr:.2f} dB")
-                print(f"    Overall reconstruction PSNR: {subregion_overall_psnr:.2f} dB")
-                
-                subregion_compression_results = {
-                    'method': 'Subregion',
-                    'original_bytes': total_subregion_original,
-                    'compressed_bytes': total_subregion_compressed,
-                    'ratio': subregion_ratio,
-                    'avg_segment_psnr': avg_subregion_psnr,
-                    'overall_psnr': subregion_overall_psnr,
-                    'reconstructed': subregion_reconstructed,
-                    'segment_results': subregion_results
-                }
-            else:
-                print(f"  ❌ No subregions were successfully compressed")
-                subregion_compression_results = None"""
             
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            
 
 
             
@@ -4661,18 +4505,27 @@ if __name__ == "__main__":
                     region_image, 
                     segment_mask, 
                     shared_qtable,
-                    quality_factor=75
+                    quality_factor=50
                 )
                 
                 if seg_compression is None:
                     continue
+
+                # Calculate ACTUAL minimal compressed size
+                actual_compressed_size = calculate_minimal_compressed_size(seg_compression)
+                seg_compression['actual_compressed_size'] = actual_compressed_size
+                seg_compression['actual_ratio'] = seg_compression['original_size'] / actual_compressed_size
+                
+                print(f"      Estimated in function: {seg_compression['compressed_size']:,} bytes")
+                print(f"      Actual minimal: {actual_compressed_size:,} bytes")
+                print(f"      Savings: {seg_compression['compressed_size'] - actual_compressed_size:,} bytes")
                 
                 # Reconstruct
                 seg_reconstructed = reconstruct_subregion_with_shared_qtable(
                     seg_compression,
                     shared_qtable,
                     region_image.shape,  # Pass the full shape
-                    quality_factor=25
+                    quality_factor=50
                 )
 
                 # Fill border gaps
@@ -4702,14 +4555,15 @@ if __name__ == "__main__":
                     'segment_id': segment_id,
                     'pixels': segment_pixels,
                     'original_bytes': seg_compression['original_size'],
-                    'compressed_bytes': seg_compression['compressed_size'],
-                    'ratio': seg_compression['compression_ratio'],
+                    'compressed_bytes': actual_compressed_size,  # Use ACTUAL size
+                    'estimated_bytes': seg_compression['compressed_size'],  # Keep for comparison
+                    'ratio': seg_compression['actual_ratio'],  # Use ACTUAL ratio
                     'psnr': seg_psnr,
                     'num_blocks': seg_compression.get('num_blocks', 0)
                 })
                 
                 total_subregion_original += seg_compression['original_size']
-                total_subregion_compressed += seg_compression['compressed_size']
+                total_subregion_compressed += actual_compressed_size  # Use ACTUAL size
                 subregion_psnrs.append(seg_psnr)
                 
                 # Progress
