@@ -1,8 +1,8 @@
 import cv2
 import math
 
-from encoder.ROI.edges import get_edge_map, compute_local_density
-from encoder.ROI.utils import suggest_automatic_threshold, process_and_unify_borders
+from encoder.ROI.edges import get_edge_map, compute_local_density, suggest_automatic_threshold
+from encoder.ROI.roi import process_and_unify_borders
 
 if __name__ == "__main__":
 

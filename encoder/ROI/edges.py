@@ -1,6 +1,37 @@
 import cv2
 import numpy as np
 
+def suggest_automatic_threshold(edge_density_map, edge_map, method='mean'):
+    """
+    Suggest automatic threshold based on edge density statistics.
+    
+    Args:
+        edge_density_map: Density map from compute_local_density
+        edge_map: Canny edge map
+        method: 'mean', 'median', or 'percentile'
+    
+    Returns:
+        suggested_threshold: Automatic threshold value
+    """
+    # Get density values only at edge locations
+    edge_mask = edge_map > 0
+    edge_density_values = edge_density_map[edge_mask]
+    
+    if len(edge_density_values) == 0:
+        return 0.1  # Default fallback
+    
+    if method == 'mean':
+        threshold = np.mean(edge_density_values)
+    elif method == 'median':
+        threshold = np.median(edge_density_values)
+    elif method == 'percentile':
+        threshold = np.percentile(edge_density_values, 70)  # 70th percentile
+    else:
+        threshold = np.mean(edge_density_values)
+    
+    return threshold
+
+
 def get_edge_map(image_rgb):
     best_edges, best_low, best_high, best_method = find_best_edges_by_quality(image_rgb)
     edge_map = cv2.Canny(image_rgb, best_low, best_high)
