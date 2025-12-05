@@ -3,7 +3,7 @@ import math
 from encoder.ROI.roi import get_regions, extract_regions
 
 from encoder.subregions.split_score import calculate_split_score, normalize_result
-from encoder.subregions.slic import calculate_split_score, enhanced_slic_with_texture, extract_slic_segment_boundaries, visualize_split_analysis
+from encoder.subregions.slic import enhanced_slic_with_texture, extract_slic_segment_boundaries, visualize_split_analysis
 
 if __name__ == "__main__":
 

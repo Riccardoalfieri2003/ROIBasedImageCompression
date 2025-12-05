@@ -325,8 +325,6 @@ if __name__ == "__main__":
     num_sublists = 50  # Start with 2 instead of 3
     compression_ratio = 0.3  # Use more conservative compression
     
-    # Use the fixed version
-    #result = compress_sublist_with_continuity(sample_coordinates, num_sublists, compression_ratio)
     result = compress_shape_divided_exact(sample_coordinates, num_sublists, compression_ratio)
     
     if result:

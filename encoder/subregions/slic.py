@@ -2,6 +2,7 @@ from skimage.color import rgb2gray, rgb2lab
 from skimage import filters
 import numpy as np
 from skimage.segmentation import slic
+import matplotlib.pyplot as plt
 
 def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight=0.3):
     """
