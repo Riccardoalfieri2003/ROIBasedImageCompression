@@ -4134,7 +4134,7 @@ def calculate_minimal_compressed_size(seg_compression):
 
 if __name__ == "__main__":
 
-    image_name = 'images/Lenna.webp'
+    image_name = 'images/waikiki.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     #enhanced_image_rgb=get_enhanced_image(image_rgb, shadow_threshold=100)
@@ -4288,52 +4288,36 @@ if __name__ == "__main__":
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         # 🆕 COMPRESS EACH SLIC SEGMENT INDIVIDUALLY
         print("  Applying DCT compression to SLIC segments...")
         all_segments_compressed = []
         total_segments_original = 0
         total_segments_compressed = 0
-
-        
-
-
-        
-
-
-        
-
-
-        
-
-
-        
-
-
-        
-
-
-        
-
-
-        
-
-
-        
-
-
-        
-
-
-        
-
-
-        
-
-
-        
-
-
-        
 
         # ==============================================
         # MAIN PROCESSING LOOP - One ROI Region at a time

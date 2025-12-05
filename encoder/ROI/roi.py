@@ -3,13 +3,141 @@ import cv2
 from matplotlib import pyplot as plt
 import numpy as np
 
-from encoder.ROI.edges import compute_local_density
+from encoder.ROI.edges import compute_local_density, suggest_automatic_threshold, get_edge_map
 from encoder.ROI.small_regions import remove_small_regions, connect_nearby_pixels
 from encoder.ROI.thin_regions import remove_thin_structures
 from encoder.ROI.small_gaps import bridge_small_gaps
 
 
 
+
+def get_regions(image_rgb):
+
+    print(f"Size: {image_rgb.size}")
+    factor = math.ceil(math.log(image_rgb.size, 10)) * math.log(image_rgb.size)
+    print(f"factor: {factor}")
+
+
+    edge_map = get_edge_map(image_rgb)
+    edge_density = compute_local_density(edge_map, kernel_size=3)
+
+
+    threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") / 100
+    
+    window_size = math.floor(factor)
+    min_region_size= math.ceil( image_rgb.size / math.pow(10, math.ceil(math.log(image_rgb.size, 10))-3 ) ) 
+    print(f"min_region_size: {min_region_size}")
+
+    print(f"\nWindow: {window_size}x{window_size}, Threshold: {threshold:.3f} ===")
+
+    unified, regions, roi_image, nonroi_image, roi_mask, nonroi_mask = process_and_unify_borders(
+        edge_map, edge_density, image_rgb,
+        density_threshold=threshold,
+        min_region_size=min_region_size
+    )
+
+    return unified, regions, roi_image, nonroi_image, roi_mask, nonroi_mask
+
+
+from skimage.measure import label, regionprops
+def extract_regions(image_rgb, roi_mask, nonroi_mask):
+    # Extract all connected regions for ROI and non-ROI
+    roi_regions = extract_connected_regions(roi_mask, image_rgb)
+    nonroi_regions = extract_connected_regions(nonroi_mask, image_rgb)
+
+    print(f"Found {len(roi_regions)} ROI regions")
+    print(f"Found {len(nonroi_regions)} non-ROI regions")
+
+    # Display some statistics
+    print("\nROI Regions (sorted by area):")
+    for i, region in enumerate(sorted(roi_regions, key=lambda x: x['area'], reverse=True)[:5]):
+        print(f"  Region {i+1}: Area = {region['area']} pixels")
+
+    print("\nNon-ROI Regions (sorted by area):")
+    for i, region in enumerate(sorted(nonroi_regions, key=lambda x: x['area'], reverse=True)[:5]):
+        print(f"  Region {i+1}: Area = {region['area']} pixels")
+
+
+    # Display ROI regions
+    plot_regions(roi_regions, "ROI Regions")
+
+    # Display non-ROI regions
+    plot_regions(nonroi_regions, "Non-ROI Regions")
+
+    return roi_regions, nonroi_regions
+
+
+
+
+def extract_connected_regions(mask, original_image):
+    """Extract all connected components from a mask"""
+    labeled_mask = label(mask)
+    regions = regionprops(labeled_mask)
+    
+    region_data = []
+    for region in regions:
+        # Create mask for this specific region
+        single_region_mask = np.zeros_like(mask)
+        single_region_mask[region.coords[:, 0], region.coords[:, 1]] = True
+        
+        # Extract the region from original image
+        region_image = original_image.copy()
+        region_image[~single_region_mask] = 0
+        
+        # Get bounding box coordinates
+        minr, minc, maxr, maxc = region.bbox
+        bbox_image = original_image[minr:maxr, minc:maxc]
+        bbox_mask = single_region_mask[minr:maxr, minc:maxc]
+        
+        region_data.append({
+            'mask': single_region_mask,
+            'full_image': region_image,
+            'bbox_image': bbox_image,
+            'bbox_mask': bbox_mask,
+            'bbox': region.bbox,
+            'area': region.area,
+            'coords': region.coords,
+            'label': region.label
+        })
+    
+    return region_data
+
+
+def plot_regions(regions, title, max_display=12):
+    """Plot multiple regions in a grid"""
+    n_regions = min(len(regions), max_display)
+    if n_regions == 0:
+        print(f"No regions to display for {title}")
+        return
+    
+    cols = 4
+    rows = (n_regions + cols - 1) // cols
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(15, 4*rows))
+    if rows == 1:
+        axes = axes.reshape(1, -1)
+    
+    for i in range(rows * cols):
+        row = i // cols
+        col = i % cols
+        
+        if i < n_regions:
+            region = regions[i]
+            axes[row, col].imshow(region['bbox_image'])
+            axes[row, col].set_title(f'Region {i+1}\nArea: {region["area"]} px')
+            axes[row, col].axis('off')
+        else:
+            axes[row, col].axis('off')
+    
+    # Hide empty subplots
+    for i in range(n_regions, rows * cols):
+        row = i // cols
+        col = i % cols
+        axes[row, col].axis('off')
+    
+    plt.suptitle(f'{title} - {len(regions)} regions found', fontsize=16)
+    plt.tight_layout()
+    plt.show()
 
 
 def process_and_unify_borders(edge_map, edge_density, original_image, 
