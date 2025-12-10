@@ -4134,7 +4134,7 @@ def calculate_minimal_compressed_size(seg_compression):
 
 if __name__ == "__main__":
 
-    image_name = 'images/waikiki.jpg'
+    image_name = 'images/Lenna.webp'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     #enhanced_image_rgb=get_enhanced_image(image_rgb, shadow_threshold=100)
