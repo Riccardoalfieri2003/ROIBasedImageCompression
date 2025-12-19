@@ -2193,8 +2193,8 @@ if __name__ == "__main__":
             try:
                 result = compress_shape_divided_exact(
                     segment_border_coords, 
-                    num_sublists=3, 
-                    compression_ratio=0.3
+                    num_sublists=5, 
+                    compression_ratio=0.5
                 )
                 compressed_border, storage_info = get_minimal_storage_with_rounding(
                     result, 
