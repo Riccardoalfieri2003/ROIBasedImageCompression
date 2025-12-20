@@ -1774,12 +1774,465 @@ def save_binary_a2f(all_segments_compressed, filename="output.a2f"):
 
 
 
+def merge_region_components_simple(region_components, roi_bbox):
+    """
+    Merge region components by placing them on ROI canvas.
+    Colored pixels override black pixels, but colored pixels don't override other colored pixels.
+    
+    Args:
+        region_components: List of compressed segments from same ROI
+        roi_bbox: (minr, minc, maxr, maxc) of ROI in original image
+    
+    Returns:
+        List of merged segments (ideally 1 segment)
+    """
+    if not region_components:
+        return []
+    
+    if len(region_components) == 1:
+        return region_components
+    
+    print(f"\n{'='*60}")
+    print(f"MERGING {len(region_components)} REGION COMPONENTS")
+    print(f"{'='*60}")
+    
+    minr, minc, maxr, maxc = roi_bbox
+    roi_height = maxr - minr
+    roi_width = maxc - minc
+    
+    # ==============================================
+    # 1. CREATE EMPTY CANVAS FOR ROI
+    # ==============================================
+    # We need to track:
+    # - The color index at each pixel (initialized to 1 = black)
+    # - The segment that "owns" each pixel (for conflict resolution)
+    roi_indices = np.ones((roi_height, roi_width), dtype=np.uint16)
+    
+    # Collect all colors from all segments
+    all_colors = []
+    color_to_index = {}
+    
+    # Ensure black is at index 1
+    black_color = (0, 0, 0)
+    if black_color not in all_colors:
+        all_colors.append(black_color)
+        color_to_index[black_color] = 1
+    
+    # ==============================================
+    # 2. PLACE SEGMENTS IN REVERSE ORDER
+    # (later segments override earlier ones)
+    # ==============================================
+    print(f"ROI canvas: {roi_height}x{roi_width} pixels")
+    print(f"Placing {len(region_components)} segments...")
+    
+    # Process segments in order (first has lowest priority, last has highest)
+    for seg_idx, seg in enumerate(region_components):
+        # Get segment data
+        seg_top_left = seg['top_left']  # Absolute coordinates
+        seg_shape = seg['shape']
+        seg_palette = seg['palette']
+        seg_indices = np.array(seg['indices']).reshape(seg_shape)
+        
+        # Calculate position relative to ROI
+        rel_row = seg_top_left[0] - minr
+        rel_col = seg_top_left[1] - minc
+        
+        # Count colored pixels in this segment
+        colored_pixels = 0
+        placed_pixels = 0
+        
+        # Place segment on ROI canvas
+        for r in range(seg_shape[0]):
+            for c in range(seg_shape[1]):
+                roi_r = rel_row + r
+                roi_c = rel_col + c
+                
+                # Check bounds
+                if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
+                    seg_pixel_idx = seg_indices[r, c]
+                    
+                    if seg_pixel_idx != 1:  # This is a colored pixel
+                        colored_pixels += 1
+                        
+                        # Get the actual color
+                        color = tuple(seg_palette[seg_pixel_idx])
+                        
+                        # Check if current pixel in ROI is black (index 1)
+                        if roi_indices[roi_r, roi_c] == 1:
+                            # Black pixel -> we can place our colored pixel
+                            
+                            # Map color to combined palette
+                            if color not in color_to_index:
+                                color_to_index[color] = len(all_colors)
+                                all_colors.append(color)
+                            
+                            # Place the color index
+                            roi_indices[roi_r, roi_c] = color_to_index[color]
+                            placed_pixels += 1
+                        # If pixel is already colored, we don't overwrite it
+                        # (first segment to claim a pixel keeps it)
+        
+        print(f"  Segment {seg_idx+1}: {colored_pixels} colored pixels, {placed_pixels} placed")
+    
+    # ==============================================
+    # 3. CREATE MERGED SEGMENT
+    # ==============================================
+    # Count statistics
+    black_pixels = np.sum(roi_indices == 1)
+    colored_pixels_total = roi_height * roi_width - black_pixels
+    
+    print(f"\nMerging complete:")
+    print(f"  ROI size: {roi_height}x{roi_width} = {roi_height*roi_width:,} pixels")
+    print(f"  Black pixels: {black_pixels:,} ({black_pixels/(roi_height*roi_width)*100:.1f}%)")
+    print(f"  Colored pixels: {colored_pixels_total:,}")
+    print(f"  Unique colors: {len(all_colors)}")
+    
+    # Create the merged segment
+    merged_segment = {
+        'top_left': (minr, minc),  # ROI's top-left in original image
+        'shape': (roi_height, roi_width),
+        'palette': all_colors,
+        'indices': roi_indices.flatten().tolist(),
+        'method': 'color_quantization',
+        'max_colors': len(all_colors),
+        'actual_colors': len(all_colors),
+        'compression_ratio': 0,  # Will calculate later
+        'encoding': 'roi_merged'
+    }
+    
+    return [merged_segment]  # Return as list with single merged segment
+
+
+def merge_region_components_better(region_components, roi_bbox):
+    """
+    Better merging: Sort segments by area (largest first) to give priority.
+    This ensures important/large segments aren't obscured by small ones.
+    """
+    if not region_components:
+        return []
+    
+    if len(region_components) == 1:
+        return region_components
+    
+    print(f"\n{'='*60}")
+    print(f"MERGING {len(region_components)} REGION COMPONENTS (sorted by area)")
+    print(f"{'='*60}")
+    
+    minr, minc, maxr, maxc = roi_bbox
+    roi_height = maxr - minr
+    roi_width = maxc - minc
+    
+    # Sort segments by area (largest first)
+    region_components_sorted = sorted(
+        region_components,
+        key=lambda seg: seg['shape'][0] * seg['shape'][1],
+        reverse=True
+    )
+    
+    # ==============================================
+    # 1. CREATE EMPTY CANVAS FOR ROI
+    # ==============================================
+    roi_indices = np.ones((roi_height, roi_width), dtype=np.uint16)
+    segment_ownership = np.zeros((roi_height, roi_width), dtype=np.int32)  # Which segment placed each pixel
+    
+    # Collect all colors
+    all_colors = []
+    color_to_index = {}
+    
+    # Ensure black is at index 1
+    black_color = (0, 0, 0)
+    if black_color not in all_colors:
+        all_colors.append(black_color)
+        color_to_index[black_color] = 1
+    
+    # ==============================================
+    # 2. PLACE SEGMENTS (largest first)
+    # ==============================================
+    print(f"ROI canvas: {roi_height}x{roi_width} pixels")
+    print(f"Processing {len(region_components_sorted)} segments (largest first)...")
+    
+    for seg_idx, seg in enumerate(region_components_sorted):
+        seg_top_left = seg['top_left']
+        seg_shape = seg['shape']
+        seg_palette = seg['palette']
+        seg_indices = np.array(seg['indices']).reshape(seg_shape)
+        
+        # Calculate position relative to ROI
+        rel_row = seg_top_left[0] - minr
+        rel_col = seg_top_left[1] - minc
+        
+        placed_pixels = 0
+        skipped_pixels = 0
+        
+        # Place segment pixels
+        for r in range(seg_shape[0]):
+            for c in range(seg_shape[1]):
+                roi_r = rel_row + r
+                roi_c = rel_col + c
+                
+                if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
+                    seg_pixel_idx = seg_indices[r, c]
+                    
+                    if seg_pixel_idx != 1:  # Colored pixel
+                        color = tuple(seg_palette[seg_pixel_idx])
+                        
+                        # Always place if pixel is black OR if no one has claimed it yet
+                        if roi_indices[roi_r, roi_c] == 1 or segment_ownership[roi_r, roi_c] == 0:
+                            # Map color to combined palette
+                            if color not in color_to_index:
+                                color_to_index[color] = len(all_colors)
+                                all_colors.append(color)
+                            
+                            # Place the color
+                            roi_indices[roi_r, roi_c] = color_to_index[color]
+                            segment_ownership[roi_r, roi_c] = seg_idx + 1
+                            placed_pixels += 1
+                        else:
+                            skipped_pixels += 1
+        
+        seg_area = seg_shape[0] * seg_shape[1]
+        print(f"  Segment {seg_idx+1} ({seg_area:,} px): {placed_pixels} placed, {skipped_pixels} skipped")
+    
+    # ==============================================
+    # 3. CREATE MERGED SEGMENT
+    # ==============================================
+    black_pixels = np.sum(roi_indices == 1)
+    colored_pixels = roi_height * roi_width - black_pixels
+    
+    print(f"\nMerging statistics:")
+    print(f"  ROI pixels: {roi_height * roi_width:,}")
+    print(f"  Colored pixels after merge: {colored_pixels:,}")
+    print(f"  Black pixels remaining: {black_pixels:,} ({black_pixels/(roi_height*roi_width)*100:.1f}%)")
+    print(f"  Unique colors in merged palette: {len(all_colors)}")
+    
+    merged_segment = {
+        'top_left': (minr, minc),
+        'shape': (roi_height, roi_width),
+        'palette': all_colors,
+        'indices': roi_indices.flatten().tolist(),
+        'method': 'color_quantization',
+        'max_colors': len(all_colors),
+        'actual_colors': len(all_colors),
+        'encoding': 'roi_merged_sorted'
+    }
+    
+    return [merged_segment]
+
+
+def merge_region_components_overlap(region_components, roi_bbox):
+    """
+    Handle overlaps by prioritizing segments that have more colored pixels at overlap locations.
+    """
+    if not region_components:
+        return []
+    
+    if len(region_components) == 1:
+        return region_components
+    
+    print(f"\n{'='*60}")
+    print(f"MERGING WITH OVERLAP HANDLING: {len(region_components)} components")
+    print(f"{'='*60}")
+    
+    minr, minc, maxr, maxc = roi_bbox
+    roi_height = maxr - minr
+    roi_width = maxc - minc
+    
+    # ==============================================
+    # 1. CREATE DATA STRUCTURES
+    # ==============================================
+    # We'll track multiple candidates for each pixel
+    pixel_candidates = {}  # (r, c) -> list of (segment_idx, color)
+    
+    # Process all segments to collect candidates
+    for seg_idx, seg in enumerate(region_components):
+        seg_top_left = seg['top_left']
+        seg_shape = seg['shape']
+        seg_palette = seg['palette']
+        seg_indices = np.array(seg['indices']).reshape(seg_shape)
+        
+        rel_row = seg_top_left[0] - minr
+        rel_col = seg_top_left[1] - minc
+        
+        for r in range(seg_shape[0]):
+            for c in range(seg_shape[1]):
+                roi_r = rel_row + r
+                roi_c = rel_col + c
+                
+                if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
+                    seg_pixel_idx = seg_indices[r, c]
+                    
+                    if seg_pixel_idx != 1:  # Colored pixel
+                        color = tuple(seg_palette[seg_pixel_idx])
+                        
+                        key = (roi_r, roi_c)
+                        if key not in pixel_candidates:
+                            pixel_candidates[key] = []
+                        
+                        pixel_candidates[key].append((seg_idx, color))
+    
+    # ==============================================
+    # 2. RESOLVE OVERLAPS
+    # ==============================================
+    # Create final canvas
+    roi_indices = np.ones((roi_height, roi_width), dtype=np.uint16)
+    
+    # Collect all colors
+    all_colors = []
+    color_to_index = {}
+    
+    # Add black
+    black_color = (0, 0, 0)
+    all_colors.append(black_color)
+    color_to_index[black_color] = 1
+    
+    # Resolve each pixel
+    overlap_count = 0
+    for (r, c), candidates in pixel_candidates.items():
+        if len(candidates) == 1:
+            # No overlap, just use this color
+            _, color = candidates[0]
+            
+            if color not in color_to_index:
+                color_to_index[color] = len(all_colors)
+                all_colors.append(color)
+            
+            roi_indices[r, c] = color_to_index[color]
+        else:
+            # Overlap - choose the "best" candidate
+            overlap_count += 1
+            
+            # Simple strategy: choose the first segment's color
+            # (could be improved to choose based on segment importance)
+            _, color = candidates[0]
+            
+            if color not in color_to_index:
+                color_to_index[color] = len(all_colors)
+                all_colors.append(color)
+            
+            roi_indices[r, c] = color_to_index[color]
+    
+    # ==============================================
+    # 3. CREATE MERGED SEGMENT
+    # ==============================================
+    black_pixels = np.sum(roi_indices == 1)
+    colored_pixels = roi_height * roi_width - black_pixels
+    
+    print(f"\nOverlap statistics:")
+    print(f"  Total pixels: {roi_height * roi_width:,}")
+    print(f"  Pixels with candidates: {len(pixel_candidates):,}")
+    print(f"  Overlap pixels (multiple candidates): {overlap_count:,}")
+    print(f"  Final colored pixels: {colored_pixels:,}")
+    print(f"  Unique colors: {len(all_colors)}")
+    
+    merged_segment = {
+        'top_left': (minr, minc),
+        'shape': (roi_height, roi_width),
+        'palette': all_colors,
+        'indices': roi_indices.flatten().tolist(),
+        'encoding': 'roi_merged_overlap'
+    }
+    
+    return [merged_segment]
+
+
+
+
+
+def visualize_roi_components(overlap_canvas, component_count):
+    """
+    Visualize the current arrangement of components in ROI.
+    """
+    try:
+        import matplotlib.pyplot as plt
+        
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        
+        # 1. Show the combined ROI
+        axes[0].imshow(overlap_canvas)
+        axes[0].set_title('Combined ROI Components')
+        axes[0].axis('off')
+        
+        # 2. Show black pixel mask (gaps)
+        black_mask = (overlap_canvas.sum(axis=2) == 0)
+        axes[1].imshow(black_mask, cmap='gray')
+        axes[1].set_title(f'Black Pixels (Gaps): {np.sum(black_mask):,}')
+        axes[1].axis('off')
+        
+        # 3. Show overlap regions
+        overlap_mask = (component_count > 1)
+        axes[2].imshow(overlap_mask, cmap='hot')
+        axes[2].set_title(f'Overlap Regions: {np.sum(overlap_mask):,}')
+        axes[2].axis('off')
+        
+        plt.tight_layout()
+        plt.show()
+    except ImportError:
+        print("Matplotlib not available for visualization")
+
+def visualize_merged_result(merged_segments, roi_shape, offset_r, offset_c):
+    """
+    Visualize the merged result for a ROI.
+    """
+    import matplotlib.pyplot as plt
+    
+    h, w = roi_shape
+    merged_canvas = np.zeros((h, w, 3), dtype=np.uint8)
+    
+    for seg in merged_segments:
+        top_left = seg['top_left']
+        shape = seg['shape']
+        indices = np.array(seg['indices']).reshape(shape)
+        palette = seg['palette']
+        
+        # Calculate position relative to ROI
+        rel_r = top_left[0] - offset_r
+        rel_c = top_left[1] - offset_c
+        
+        for r in range(shape[0]):
+            for c in range(shape[1]):
+                canvas_r = rel_r + r
+                canvas_c = rel_c + c
+                
+                if 0 <= canvas_r < h and 0 <= canvas_c < w:
+                    idx = indices[r, c]
+                    if idx < len(palette):
+                        color = palette[idx]
+                        merged_canvas[canvas_r, canvas_c] = color
+    
+    plt.figure(figsize=(10, 5))
+    plt.imshow(merged_canvas)
+    plt.title(f'Merged ROI Result: {len(merged_segments)} segments')
+    plt.axis('off')
+    plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
 if __name__ == "__main__":
 
-    image_name = 'images/waikiki.jpg'
+    image_name = 'images/Lenna.webp'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -1840,6 +2293,9 @@ if __name__ == "__main__":
     # MAIN PROCESSING LOOP - One ROI Region at a time
     # ==============================================
     for i, region in enumerate(roi_regions):
+
+        region_components=[]
+
         print(f"\n{'='*60}")
         print(f"PROCESSING ROI REGION {i+1}/{len(roi_regions)}")
         print(f"{'='*60}")
@@ -1897,49 +2353,6 @@ if __name__ == "__main__":
         print(f"  Found {len(segment_boundaries)} sub-regions")
         print(f"  Total boundary points: {sum(seg['num_points'] for seg in segment_boundaries):,}")
         
-
-
-        
-        # ==============================================
-        # MODIFIED MAIN LOOP WITH SHARED QUANTIZATION TABLE
-        # ==============================================
-       
-        print(f"\n{'='*60}")
-        print(f"METHOD 2: SHARED QTABLE SUBREGION COMPRESSION")
-        print(f"{'='*60}")
-
-        # PHASE 1: Analyze all subregions and design shared quantization table
-        shared_qtable = analyze_subregions_frequency_content(
-            region_image, 
-            segment_boundaries, 
-            roi_segments, 
-            bbox_mask
-        )
-
-        print(f"\n  Shared quantization table (8x8):")
-        for i in range(8):
-            row_str = "    " + " ".join(f"{val:6.1f}" for val in shared_qtable[i])  # 6 chars, 1 decimal
-            print(row_str)
-
-        # PHASE 2: Compress all subregions using shared table
-        subregion_results = []
-        subregion_reconstructed = np.zeros_like(region_image)
-        total_subregion_original = 0
-        total_subregion_compressed = len(shared_qtable.tobytes())  # Start with table size
-        subregion_psnrs = []
-
-        print(f"\n  Compressing {len(segment_boundaries)} subregions with shared table...")
-
-    
-
-
-
-
-
-
-
-
-
 
 
 
@@ -2020,53 +2433,6 @@ if __name__ == "__main__":
             print(f"      Top-left in full image: ({top_left_abs_row}, {top_left_abs_col})")
             
 
-            """
-            # ==============================================
-            # 5. VISUALIZE BEFORE/AFTER CROPPING
-            # ==============================================
-            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-            
-            import matplotlib.patches as patches  # For drawing the Rectangle
-            # Original (full region with black background)
-            axes[0].imshow(segment_image_full)
-            # Draw red bounding box
-            rect = patches.Rectangle(
-                (min_col, min_row), 
-                max_col - min_col, 
-                max_row - min_row,
-                linewidth=2, 
-                edgecolor='red', 
-                facecolor='none'
-            )
-            axes[0].add_patch(rect)
-            axes[0].set_title(f'Original Segment\nFull region: {h}x{w}')
-            axes[0].axis('off')
-            
-            # Cropped version
-            axes[1].imshow(segment_image_cropped)
-            axes[1].set_title(f'Cropped Segment\nCropped: {crop_height}x{crop_width}')
-            axes[1].axis('off')
-            
-            # Binary mask (for reference)
-            axes[2].imshow(non_black_mask, cmap='gray')
-            # Draw bounding box on mask too
-            rect_mask = patches.Rectangle(
-                (min_col, min_row), 
-                max_col - min_col, 
-                max_row - min_row,
-                linewidth=2, 
-                edgecolor='red', 
-                facecolor='none'
-            )
-            axes[2].add_patch(rect_mask)
-            axes[2].set_title(f'Non-black Mask\nPixels: {np.sum(non_black_mask):,}')
-            axes[2].axis('off')
-            
-            plt.suptitle(f'Segment {seg_idx+1} - Tight Bounding Box Extraction', fontsize=14)
-            plt.tight_layout()
-            plt.show()
-            """
-            
      
             
         
@@ -2079,664 +2445,65 @@ if __name__ == "__main__":
             seg_compression = compress_small_region_color_quantization(
                 segment_image_cropped,
                 (top_left_abs_row, top_left_abs_col),
-                max_colors=16
+                max_colors=32
             )
 
             if seg_compression is None:
                 continue
 
             all_segments_compressed.append(seg_compression)
+            region_components.append(seg_compression)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-            
-            """
-            # ==============================================
-            # 3. RECONSTRUCT 
-            # ==============================================
-            reconstruction_result = decompress_color_quantization(
-                seg_compression,
-            )
-            
-
-            # ==============================================
-            # 4. VISUALIZE COMPARISON WITH STATS
-            # ==============================================
-            print(f"\n{'='*60}")
-            print(f"SEGMENT {seg_idx+1} - COLOR QUANTIZATION RESULTS")
-            print(f"{'='*60}")
-
-            # Get stats from compression
-            h, w, _ = segment_image_cropped.shape
-            original_size = h * w * 3
-            compressed_size = seg_compression['compressed_size']
-            compression_ratio = seg_compression['compression_ratio']
-            psnr = seg_compression['psnr']
-            n_colors = seg_compression['actual_colors']
-
-            # Print stats in a clean format
-            print(f"Segment {seg_idx+1} Summary:")
-            print(f"  Shape: {h}x{w}")
-            print(f"  Top-left: {top_left_abs_row, top_left_abs_col}")
-            print(f"  Colors in palette: {n_colors}")
-            print(f"  Original size: {original_size:,} bytes")
-            print(f"  Compressed size: {compressed_size:,} bytes")
-            print(f"  Compression ratio: {compression_ratio:.2f}:1")
-            print(f"  Space savings: {(1 - compressed_size/original_size)*100:.1f}%")
-            print(f"  Quality (PSNR): {psnr:.2f} dB")
-
-            # Create visualization figure
-            import matplotlib.pyplot as plt
-
-            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-
-            # Original image
-            axes[0, 0].imshow(segment_image_cropped)
-            axes[0, 0].set_title(f'Original\n{h}x{w} pixels')
-            axes[0, 0].axis('off')
-
-            # Add pixel info
-            non_black = np.sum(np.any(segment_image_cropped > 10, axis=2))
-            axes[0, 0].text(0.02, 0.98, f'Content: {non_black:,} px', 
-                        transform=axes[0, 0].transAxes, fontsize=9, color='white',
-                        verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='black', alpha=0.7))
-
-            # Reconstructed image
-            reconstructed_img = reconstruction_result['image']
-            axes[0, 1].imshow(reconstructed_img)
-            axes[0, 1].set_title(f'Reconstructed\n{n_colors} colors')
-            axes[0, 1].axis('off')
-
-            # Difference (amplified for visibility)
-            diff = np.abs(segment_image_cropped.astype(float) - reconstructed_img.astype(float))
-            diff_display = np.clip(diff * 3, 0, 255).astype(np.uint8)
-            axes[0, 2].imshow(diff_display)
-            axes[0, 2].set_title(f'Difference (×3)\nPSNR: {psnr:.2f} dB')
-            axes[0, 2].axis('off')
-
-            # Add MSE/PSNR to difference plot
-            mse = np.mean(diff ** 2)
-            axes[0, 2].text(0.02, 0.98, f'MSE: {mse:.2f}', 
-                        transform=axes[0, 2].transAxes, fontsize=9, color='white',
-                        verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='red', alpha=0.7))
-
-            # Color palette visualization
-            palette = np.array(seg_compression['palette'])
-            axes[1, 0].axis('off')
-
-            # Create palette visualization
-            if n_colors > 0:
-                # Create a color swatch
-                palette_h = max(1, min(10, n_colors // 10))
-                palette_w = (n_colors + palette_h - 1) // palette_h
-                
-                palette_img = np.zeros((palette_h * 20, palette_w * 20, 3), dtype=np.uint8)
-                
-                for idx, color in enumerate(palette):
-                    row = (idx // palette_w) * 20
-                    col = (idx % palette_w) * 20
-                    palette_img[row:row+18, col:col+18] = color
-                
-                # Display in inset axes
-                from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-                ax_inset = inset_axes(axes[1, 0], width="60%", height="60%", loc='center')
-                ax_inset.imshow(palette_img)
-                ax_inset.set_title(f'Color Palette ({n_colors} colors)')
-                ax_inset.axis('off')
-                
-                # Add palette stats
-                unique_original = len(np.unique(segment_image_cropped.reshape(-1, 3), axis=0))
-                palette_text = f'Original: {unique_original} colors\nCompressed: {n_colors} colors\nReduction: {(1 - n_colors/unique_original)*100:.1f}%'
-                axes[1, 0].text(0.5, 0.1, palette_text, transform=axes[1, 0].transAxes,
-                            fontsize=9, horizontalalignment='center',
-                            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
-
-            # Compression statistics visualization
-            axes[1, 1].axis('off')
-
-            # Create bar chart for size comparison
-            size_data = [original_size, compressed_size]
-            size_labels = ['Original', 'Compressed']
-            colors = ['skyblue', 'lightcoral']
-
-            # Create inset axes for bar chart
-            ax_bar = inset_axes(axes[1, 1], width="60%", height="60%", loc='center')
-            bars = ax_bar.bar(size_labels, size_data, color=colors, alpha=0.7)
-            ax_bar.set_title('Size Comparison')
-            ax_bar.set_ylabel('Bytes')
-
-            # Add value labels on bars
-            for bar in bars:
-                height = bar.get_height()
-                ax_bar.text(bar.get_x() + bar.get_width()/2., height + max(size_data)*0.05,
-                        f'{height:,}', ha='center', va='bottom', fontsize=9)
-
-            # Add ratio text
-            ratio_text = f'Compression Ratio: {compression_ratio:.2f}:1\nSavings: {(1 - compressed_size/original_size)*100:.1f}%'
-            axes[1, 1].text(0.5, 0.1, ratio_text, transform=axes[1, 1].transAxes,
-                        fontsize=9, horizontalalignment='center',
-                        bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7))
-
-            # Index map visualization (shows which palette index each pixel uses)
-            axes[1, 2].axis('off')
-
-            # Get index map
-            index_map = np.array(seg_compression['indices']).reshape(h, w)
-
-            # Display index map as grayscale
-            ax_index = inset_axes(axes[1, 2], width="60%", height="60%", loc='center')
-            im = ax_index.imshow(index_map, cmap='viridis', aspect='auto')
-            ax_index.set_title('Index Map (Palette Indices)')
-            ax_index.axis('off')
-
-            # Add colorbar for index map
-            plt.colorbar(im, ax=ax_index, fraction=0.046, pad=0.04)
-
-            # Add index map stats
-            index_unique = len(np.unique(index_map))
-            axes[1, 2].text(0.5, 0.1, f'Unique indices: {index_unique}/{n_colors}',
-                        transform=axes[1, 2].transAxes,
-                        fontsize=9, horizontalalignment='center',
-                        bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
-
-            # Main title
-            plt.suptitle(f'Segment {seg_idx+1}: Color Quantization Results\nTop-left: {top_left_abs_row, top_left_abs_col}, Size: {h}x{w}', 
-                        fontsize=14, fontweight='bold')
-
-            plt.tight_layout()
-            plt.show()
-
-            # ==============================================
-            # 5. CONSOLE SUMMARY (CLEAN FORMAT)
-            # ==============================================
-            print(f"\n📊 COMPRESSION SUMMARY:")
-            print(f"   Original:    {original_size:>8,} bytes")
-            print(f"   Compressed:  {compressed_size:>8,} bytes")
-            print(f"   Ratio:       {compression_ratio:>8.2f}:1")
-            print(f"   Savings:     {(1 - compressed_size/original_size)*100:>7.1f}%")
-            print(f"   PSNR:        {psnr:>8.2f} dB")
-            print(f"   Palette:     {n_colors:>8} colors")
-            print(f"{'='*60}")
-            """
-
-    # After compressing all segments:
-    # ==============================================
-    # SAVE TO .a2f FILE
-    # ==============================================
-
-    def run_length_encode_indices(indices):
-        """
-        Compress indices with run-length encoding.
-        Returns a list where even positions are values, odd positions are counts.
-        Example: [1,1,1,2,2,1,1] → [1, 3, 2, 2, 1, 2]
-        """
-        if len(indices) == 0:
-            return []
-        
-        rle = []
-        current_value = indices[0]
-        current_count = 1
-        
-        for value in indices[1:]:
-            if value == current_value:
-                current_count += 1
-            else:
-                rle.append(int(current_value))
-                rle.append(int(current_count))
-                current_value = value
-                current_count = 1
-        
-        # Don't forget the last run!
-        rle.append(int(current_value))
-        rle.append(int(current_count))
-        
-        return rle
-
-    def optimize_segments_for_storage(all_segments):
-        """
-        Apply RLE compression to indices before saving.
-        """
-        optimized_segments = []
-        
-        for seg in all_segments:
-            h, w = seg['shape']
-            total_pixels = h * w
-            
-            # Convert indices to RLE
-            if 'indices' in seg and len(seg['indices']) == total_pixels:
-                indices_array = np.array(seg['indices'], dtype=np.uint8)
-                indices_rle = run_length_encode_indices(indices_array)
-                
-                # Calculate ACTUAL size difference
-                # Original: each index is 1 byte
-                original_size = total_pixels * 1
-                
-                # RLE: For each run, we store 1 byte for value + variable bytes for count
-                # But since we're pickling, let's estimate more accurately
-                # Counts could be large, but typically fit in 1-3 bytes
-                rle_runs = len(indices_rle) // 2
-                avg_run_length = total_pixels / max(rle_runs, 1)
-                
-                # RLE is beneficial if we have long runs (avg_run_length > 2)
-                # OR if it reduces the number of elements significantly
-                if rle_runs * 2 < total_pixels * 0.5:  # If RLE reduces elements by 50%
-                    print(f"Segment {len(optimized_segments)}: RLE {total_pixels} → {len(indices_rle)} elements "
-                        f"(avg run: {avg_run_length:.1f})")
-                    
-                    optimized = seg.copy()
-                    optimized['indices_rle'] = indices_rle
-                    del optimized['indices']
-                    optimized['encoding'] = 'rle'
-                    
-                    optimized_segments.append(optimized)
-                    continue
-            
-            # Keep original if RLE doesn't help
-            if 'indices' in seg:
-                # Store raw indices more efficiently
-                optimized = seg.copy()
-                # Convert to numpy array for smaller pickle size
-                optimized['indices'] = np.array(seg['indices'], dtype=np.uint8)
-                optimized['encoding'] = 'raw'
-                optimized_segments.append(optimized)
-            else:
-                optimized_segments.append(seg)
-        
-        print(f"Optimized {len(all_segments)} segments")
-        return optimized_segments
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    import numpy as np
-
-    # ==============================================
-    # COLUMN-BASED ENCODING IMPLEMENTATION
-    # ==============================================
-
-    def compress_with_column_encoding(segment):
-        """
-        Apply column-based encoding to a segment.
-        Best for patterns where columns have similar values.
-        """
-        h, w = segment['shape']
-        indices = segment['indices']
-        
-        # Convert to matrix (rows x columns)
-        matrix = np.array(indices, dtype=np.uint8).reshape(h, w)
-        
-        # Analyze each column
-        columns_data = []
-        
-        for col in range(w):
-            column = matrix[:, col]
-            
-            # Check if column is uniform (all same value)
-            if np.all(column == column[0]):
-                # Uniform column: store as ('u', value)
-                columns_data.append(('u', int(column[0])))
-                
-            # Check if column is mostly one value (like mostly black)
-            else:
-                # Find the most common value
-                unique, counts = np.unique(column, return_counts=True)
-                most_common_idx = np.argmax(counts)
-                majority_val = int(unique[most_common_idx])
-                majority_count = int(counts[most_common_idx])
-                
-                # If majority covers > 80% of the column, store with exceptions
-                if majority_count / h > 0.8:
-                    # Create positions of exceptions
-                    exceptions = []
-                    exception_positions = []
-                    
-                    for row in range(h):
-                        if column[row] != majority_val:
-                            exceptions.append(int(column[row]))
-                            exception_positions.append(row)
-                    
-                    # Store as ('m', majority_value, [positions], [exceptions])
-                    columns_data.append(('m', majority_val, 
-                                    exception_positions, exceptions))
-                else:
-                    # Store full column
-                    columns_data.append(('f', column.tolist()))
-        
-        return {
-            'top_left': segment['top_left'],
-            'shape': segment['shape'],
-            'palette': segment['palette'],
-            'encoding': 'column',
-            'columns': columns_data
-        }
-
-
-    def estimate_column_size(columns_data):
-        """
-        Estimate storage size for column-based encoding.
-        """
-        total_size = 0
-        
-        for col_type, *col_data in columns_data:
-            if col_type == 'u':  # Uniform
-                total_size += 2  # type + value
-            elif col_type == 'm':  # Majority with exceptions
-                majority_val, positions, exceptions = col_data
-                total_size += 3 + len(positions) + len(exceptions)  # type + majority + counts + data
-            elif col_type == 'f':  # Full column
-                column_values = col_data[0]
-                total_size += 1 + len(column_values)  # type + values
-        
-        return total_size
-
-
-    def optimize_segments_column_based(all_segments):
-        """
-        Apply column-based encoding to all segments.
-        """
-        print(f"🔧 Applying column-based encoding to {len(all_segments)} segments...")
-        
-        optimized_segments = []
-        
-        for i, seg in enumerate(all_segments):
-            h, w = seg['shape']
-            total_pixels = h * w
-            
-            # Apply column encoding
-            optimized = compress_with_column_encoding(seg)
-            
-            # Calculate compression ratio
-            original_size = total_pixels  # 1 byte per index
-            compressed_size = estimate_column_size(optimized['columns'])
-            
-            # Log if compression is significant
-            if compressed_size < original_size * 0.9:  # At least 10% smaller
-                print(f"  Segment {i}: {h}x{w} = {total_pixels} pixels")
-                print(f"    Original: {original_size}, Compressed: {compressed_size}")
-                print(f"    Savings: {(1 - compressed_size/original_size)*100:.1f}%")
-            
-            optimized_segments.append(optimized)
-        
-        print(f"✅ Column-based encoding complete!")
-        return optimized_segments
-
-
-    # ==============================================
-    # UPDATED SAVE FUNCTION FOR COLUMN ENCODING
-    # ==============================================
-
-    def save_segments_a2f(all_segments_compressed, filename="output.a2f"):
-        """
-        Save segments with column-based encoding.
-        """
-        print(f"\n💾 Saving to {filename}")
-        
-        # Create minimal segments list
-        segments_to_save = []
-        
-        for seg in all_segments_compressed:
-            # Store only essential data
-            minimal_seg = {
-                't': seg['top_left'],      # top_left
-                's': seg['shape'],         # shape
-                'p': seg['palette'],       # palette
-                'e': 'c',                  # encoding: column
-                'c': seg['columns']        # column data
-            }
-            
-            segments_to_save.append(minimal_seg)
-        
-        print(f"Preparing {len(segments_to_save)} segments")
-        
-        # Calculate statistics
-        total_pixels = 0
-        total_columns = 0
-        column_types = {'u': 0, 'm': 0, 'f': 0}
-        
-        for seg in segments_to_save:
-            h, w = seg['s']
-            total_pixels += h * w
-            total_columns += w
-            
-            for col_type, *col_data in seg['c']:
-                column_types[col_type] += 1
-        
-        print(f"Total pixels: {total_pixels:,}")
-        print(f"Total columns: {total_columns:,}")
-        print(f"Uniform columns: {column_types['u']:,} ({column_types['u']/total_columns*100:.1f}%)")
-        print(f"Majority columns: {column_types['m']:,} ({column_types['m']/total_columns*100:.1f}%)")
-        print(f"Full columns: {column_types['f']:,} ({column_types['f']/total_columns*100:.1f}%)")
-        
         # ==============================================
-        # OPTIMIZED SERIALIZATION
+        # 4. MERGE COMPONENTS WITHIN THIS ROI
         # ==============================================
-        save_data = segments_to_save
-        
-        # Serialize with highest efficiency
-        serialized = pickle.dumps(save_data, protocol=pickle.HIGHEST_PROTOCOL)
-        print(f"Pickle size: {len(serialized):,} bytes")
-        
-        # Apply compression
-        compressed = zlib.compress(serialized, level=9)
-        print(f"After zlib: {len(compressed):,} bytes")
-        
-        # ==============================================
-        # WRITE .a2f FILE
-        # ==============================================
-        with open(filename, 'wb') as f:
-            # Header
-            f.write(b'A2F2')  # Magic number
-            f.write(struct.pack('<I', len(compressed)))  # Data size
+        print(f"\n{'='*60}")
+        print(f"MERGING COMPONENTS FOR ROI {i+1}")
+        print(f"{'='*60}")
+
+        if len(region_components) > 1:
+
+            # Choose merging strategy
+            roi_height = maxr - minr
+            roi_width = maxc - minc
+            roi_pixels = roi_height * roi_width
+
+            # Get ROI bbox
+            minr, minc, maxr, maxc = region['bbox']
+            roi_bbox = (minr, minc, maxr, maxc)
             
-            # Write compressed data
-            f.write(compressed)
-        
-        # Calculate final stats
-        original_bytes = total_pixels * 3  # Original RGB
-        file_size = len(compressed) + 8
-        
-        print(f"\n✅ Saved {len(segments_to_save)} segments")
-        print(f"   File size: {file_size:,} bytes ({file_size/1024:.1f} KB)")
-        print(f"   Original (RGB): {original_bytes:,} bytes ({original_bytes/1024:.1f} KB)")
-        print(f"   Compression ratio: {original_bytes/file_size:.2f}:1")
-        print(f"   Space savings: {(1 - file_size/original_bytes)*100:.1f}%")
-        
-        return {
-            'filename': filename,
-            'file_size': file_size,
-            'num_segments': len(segments_to_save),
-            'format': 'A2F2 (Column-based encoding)',
-            'compression_ratio': original_bytes/file_size
-        }
+            # Choose merging strategy
+            # Option 1: Simple merge (colored pixels override black)
+            merged_components = merge_region_components_simple(region_components, roi_bbox)
+            
+            # Option 2: Merge with segment sorting
+            # merged_components = merge_region_components_better(region_components, roi_bbox)
+            
+            # Option 3: Merge with explicit overlap handling
+            # merged_components = merge_region_components_overlap(region_components, roi_bbox)
+            
+            # Add to final list
+            all_segments_compressed.extend(merged_components)
+            
+            # Calculate statistics
+            original_pixels = sum(seg['shape'][0] * seg['shape'][1] for seg in region_components)
+            original_black = sum(seg['indices'].count(1) for seg in region_components)
+            
+            merged_pixels = sum(seg['shape'][0] * seg['shape'][1] for seg in merged_components)
+            merged_black = sum(seg['indices'].count(1) for seg in merged_components)
+            
+            print(f"\nSummary:")
+            print(f"  Original: {len(region_components)} segments, {original_pixels:,} pixels")
+            print(f"  Merged: {len(merged_components)} segments, {merged_pixels:,} pixels")
+            print(f"  Black reduction: {original_black - merged_black:,} pixels")
+            print(f"  Pixel reduction: {original_pixels - merged_pixels:,} pixels")
 
-
-    # ==============================================
-    # INTEGRATION INTO YOUR PIPELINE
-    # ==============================================
-
-    # Replace your current code with:
-    import time
-
-    # After compression, before saving:
-    all_segments_optimized = optimize_segments_column_based(all_segments_compressed)
-
-    filename = "Waikikialt2_mod.a2f"
-    save_result = save_segments_a2f(
-        all_segments_optimized,
-        filename=filename
-    )
-
-    if save_result:
-        print(f"\n📁 File saved successfully:")
-        print(f"   Name: {filename}")
-        print(f"   Size: {save_result['file_size']:,} bytes")
-        print(f"   Segments: {save_result['num_segments']}")
-        print(f"   Format: {save_result['format']}")
-        print(f"   Ratio: {save_result['compression_ratio']:.2f}:1")
-
-
-
-
-
-"""
-def run_length_encode_indices(indices):
-    if len(indices) == 0:
-        return []
-
-    rle = []
-    current_value = indices[0]
-    current_count = 1
-
-    for value in indices[1:]:
-        if value == current_value:
-            current_count += 1
+            # Optional: Visualize the merged result
+            visualize_merged_result(merged_components, (roi_height, roi_width), minr, minc)
+            
+            
         else:
-            rle.append((int(current_value), int(current_count)))
-            current_value = value
-            current_count = 1
-
-    # Don't forget the last run!
-    rle.append((int(current_value), int(current_count)))
-
-    return rle
-
-def optimize_segments_for_storage(all_segments):
-    optimized_segments = []
-    
-    for seg in all_segments:
-        h, w = seg['shape']
-        total_pixels = h * w
-        
-        # Convert indices to RLE
-        if 'indices' in seg and len(seg['indices']) == total_pixels:
-            indices_array = np.array(seg['indices'], dtype=np.uint8)
-            indices_rle = run_length_encode_indices(indices_array)
-            
-            # Check if RLE is actually better
-            original_size = total_pixels * 1  # 1 byte per index
-            rle_size = len(indices_rle) * 2 * 4  # Rough estimate: 2 values × 4 bytes
-            
-            if rle_size < original_size * 0.8:  # If RLE saves at least 20%
-                print(f"RLE compression: {original_size:,} → ~{rle_size:,} bytes")
-                
-                optimized = seg.copy()
-                optimized['indices_rle'] = indices_rle
-                del optimized['indices']  # Remove raw indices
-                optimized['encoding'] = 'rle'
-                
-                optimized_segments.append(optimized)
-                continue
-        
-        # Keep original if RLE doesn't help
-        optimized_segments.append(seg)
-    
-    print(f"Optimized {len(all_segments)} segments with RLE")
-    return optimized_segments
-"""
+            # Just add the single component
+            all_segments_compressed.extend(region_components)
+            print(f"Only 1 component in ROI {i+1}, no merging needed")
