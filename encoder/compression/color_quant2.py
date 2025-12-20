@@ -1772,19 +1772,13 @@ def save_binary_a2f(all_segments_compressed, filename="output.a2f"):
 
 
 
+import numpy as np
+from collections import defaultdict
 
-
-def merge_region_components_simple(region_components, roi_bbox):
+def fast_border_smoothing(region_components, roi_bbox):
     """
-    Merge region components by placing them on ROI canvas.
-    Colored pixels override black pixels, but colored pixels don't override other colored pixels.
-    
-    Args:
-        region_components: List of compressed segments from same ROI
-        roi_bbox: (minr, minc, maxr, maxc) of ROI in original image
-    
-    Returns:
-        List of merged segments (ideally 1 segment)
+    Fast border smoothing: Border pixels get averaged with surrounding non-border pixels.
+    Much faster than previous implementations.
     """
     if not region_components:
         return []
@@ -1793,7 +1787,7 @@ def merge_region_components_simple(region_components, roi_bbox):
         return region_components
     
     print(f"\n{'='*60}")
-    print(f"MERGING {len(region_components)} REGION COMPONENTS")
+    print(f"FAST BORDER SMOOTHING: {len(region_components)} components")
     print(f"{'='*60}")
     
     minr, minc, maxr, maxc = roi_bbox
@@ -1801,279 +1795,11 @@ def merge_region_components_simple(region_components, roi_bbox):
     roi_width = maxc - minc
     
     # ==============================================
-    # 1. CREATE EMPTY CANVAS FOR ROI
+    # 1. SIMPLE MERGE (NO SMOOTHING YET)
     # ==============================================
-    # We need to track:
-    # - The color index at each pixel (initialized to 1 = black)
-    # - The segment that "owns" each pixel (for conflict resolution)
-    roi_indices = np.ones((roi_height, roi_width), dtype=np.uint16)
+    print("Merging components...")
     
-    # Collect all colors from all segments
-    all_colors = []
-    color_to_index = {}
-    
-    # Ensure black is at index 1
-    black_color = (0, 0, 0)
-    if black_color not in all_colors:
-        all_colors.append(black_color)
-        color_to_index[black_color] = 1
-    
-    # ==============================================
-    # 2. PLACE SEGMENTS IN REVERSE ORDER
-    # (later segments override earlier ones)
-    # ==============================================
-    print(f"ROI canvas: {roi_height}x{roi_width} pixels")
-    print(f"Placing {len(region_components)} segments...")
-    
-    # Process segments in order (first has lowest priority, last has highest)
-    for seg_idx, seg in enumerate(region_components):
-        # Get segment data
-        seg_top_left = seg['top_left']  # Absolute coordinates
-        seg_shape = seg['shape']
-        seg_palette = seg['palette']
-        seg_indices = np.array(seg['indices']).reshape(seg_shape)
-        
-        # Calculate position relative to ROI
-        rel_row = seg_top_left[0] - minr
-        rel_col = seg_top_left[1] - minc
-        
-        # Count colored pixels in this segment
-        colored_pixels = 0
-        placed_pixels = 0
-        
-        # Place segment on ROI canvas
-        for r in range(seg_shape[0]):
-            for c in range(seg_shape[1]):
-                roi_r = rel_row + r
-                roi_c = rel_col + c
-                
-                # Check bounds
-                if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
-                    seg_pixel_idx = seg_indices[r, c]
-                    
-                    if seg_pixel_idx != 1:  # This is a colored pixel
-                        colored_pixels += 1
-                        
-                        # Get the actual color
-                        color = tuple(seg_palette[seg_pixel_idx])
-                        
-                        # Check if current pixel in ROI is black (index 1)
-                        if roi_indices[roi_r, roi_c] == 1:
-                            # Black pixel -> we can place our colored pixel
-                            
-                            # Map color to combined palette
-                            if color not in color_to_index:
-                                color_to_index[color] = len(all_colors)
-                                all_colors.append(color)
-                            
-                            # Place the color index
-                            roi_indices[roi_r, roi_c] = color_to_index[color]
-                            placed_pixels += 1
-                        # If pixel is already colored, we don't overwrite it
-                        # (first segment to claim a pixel keeps it)
-        
-        print(f"  Segment {seg_idx+1}: {colored_pixels} colored pixels, {placed_pixels} placed")
-    
-    # ==============================================
-    # 3. CREATE MERGED SEGMENT
-    # ==============================================
-    # Count statistics
-    black_pixels = np.sum(roi_indices == 1)
-    colored_pixels_total = roi_height * roi_width - black_pixels
-    
-    print(f"\nMerging complete:")
-    print(f"  ROI size: {roi_height}x{roi_width} = {roi_height*roi_width:,} pixels")
-    print(f"  Black pixels: {black_pixels:,} ({black_pixels/(roi_height*roi_width)*100:.1f}%)")
-    print(f"  Colored pixels: {colored_pixels_total:,}")
-    print(f"  Unique colors: {len(all_colors)}")
-    
-    # Create the merged segment
-    merged_segment = {
-        'top_left': (minr, minc),  # ROI's top-left in original image
-        'shape': (roi_height, roi_width),
-        'palette': all_colors,
-        'indices': roi_indices.flatten().tolist(),
-        'method': 'color_quantization',
-        'max_colors': len(all_colors),
-        'actual_colors': len(all_colors),
-        'compression_ratio': 0,  # Will calculate later
-        'encoding': 'roi_merged'
-    }
-    
-    return [merged_segment]  # Return as list with single merged segment
-
-
-def merge_region_components_better(region_components, roi_bbox):
-    """
-    Better merging: Sort segments by area (largest first) to give priority.
-    This ensures important/large segments aren't obscured by small ones.
-    """
-    if not region_components:
-        return []
-    
-    if len(region_components) == 1:
-        return region_components
-    
-    print(f"\n{'='*60}")
-    print(f"MERGING {len(region_components)} REGION COMPONENTS (sorted by area)")
-    print(f"{'='*60}")
-    
-    minr, minc, maxr, maxc = roi_bbox
-    roi_height = maxr - minr
-    roi_width = maxc - minc
-    
-    # Sort segments by area (largest first)
-    region_components_sorted = sorted(
-        region_components,
-        key=lambda seg: seg['shape'][0] * seg['shape'][1],
-        reverse=True
-    )
-    
-    # ==============================================
-    # 1. CREATE EMPTY CANVAS FOR ROI
-    # ==============================================
-    roi_indices = np.ones((roi_height, roi_width), dtype=np.uint16)
-    segment_ownership = np.zeros((roi_height, roi_width), dtype=np.int32)  # Which segment placed each pixel
-    
-    # Collect all colors
-    all_colors = []
-    color_to_index = {}
-    
-    # Ensure black is at index 1
-    black_color = (0, 0, 0)
-    if black_color not in all_colors:
-        all_colors.append(black_color)
-        color_to_index[black_color] = 1
-    
-    # ==============================================
-    # 2. PLACE SEGMENTS (largest first)
-    # ==============================================
-    print(f"ROI canvas: {roi_height}x{roi_width} pixels")
-    print(f"Processing {len(region_components_sorted)} segments (largest first)...")
-    
-    for seg_idx, seg in enumerate(region_components_sorted):
-        seg_top_left = seg['top_left']
-        seg_shape = seg['shape']
-        seg_palette = seg['palette']
-        seg_indices = np.array(seg['indices']).reshape(seg_shape)
-        
-        # Calculate position relative to ROI
-        rel_row = seg_top_left[0] - minr
-        rel_col = seg_top_left[1] - minc
-        
-        placed_pixels = 0
-        skipped_pixels = 0
-        
-        # Place segment pixels
-        for r in range(seg_shape[0]):
-            for c in range(seg_shape[1]):
-                roi_r = rel_row + r
-                roi_c = rel_col + c
-                
-                if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
-                    seg_pixel_idx = seg_indices[r, c]
-                    
-                    if seg_pixel_idx != 1:  # Colored pixel
-                        color = tuple(seg_palette[seg_pixel_idx])
-                        
-                        # Always place if pixel is black OR if no one has claimed it yet
-                        if roi_indices[roi_r, roi_c] == 1 or segment_ownership[roi_r, roi_c] == 0:
-                            # Map color to combined palette
-                            if color not in color_to_index:
-                                color_to_index[color] = len(all_colors)
-                                all_colors.append(color)
-                            
-                            # Place the color
-                            roi_indices[roi_r, roi_c] = color_to_index[color]
-                            segment_ownership[roi_r, roi_c] = seg_idx + 1
-                            placed_pixels += 1
-                        else:
-                            skipped_pixels += 1
-        
-        seg_area = seg_shape[0] * seg_shape[1]
-        print(f"  Segment {seg_idx+1} ({seg_area:,} px): {placed_pixels} placed, {skipped_pixels} skipped")
-    
-    # ==============================================
-    # 3. CREATE MERGED SEGMENT
-    # ==============================================
-    black_pixels = np.sum(roi_indices == 1)
-    colored_pixels = roi_height * roi_width - black_pixels
-    
-    print(f"\nMerging statistics:")
-    print(f"  ROI pixels: {roi_height * roi_width:,}")
-    print(f"  Colored pixels after merge: {colored_pixels:,}")
-    print(f"  Black pixels remaining: {black_pixels:,} ({black_pixels/(roi_height*roi_width)*100:.1f}%)")
-    print(f"  Unique colors in merged palette: {len(all_colors)}")
-    
-    merged_segment = {
-        'top_left': (minr, minc),
-        'shape': (roi_height, roi_width),
-        'palette': all_colors,
-        'indices': roi_indices.flatten().tolist(),
-        'method': 'color_quantization',
-        'max_colors': len(all_colors),
-        'actual_colors': len(all_colors),
-        'encoding': 'roi_merged_sorted'
-    }
-    
-    return [merged_segment]
-
-
-def merge_region_components_overlap(region_components, roi_bbox):
-    """
-    Handle overlaps by prioritizing segments that have more colored pixels at overlap locations.
-    """
-    if not region_components:
-        return []
-    
-    if len(region_components) == 1:
-        return region_components
-    
-    print(f"\n{'='*60}")
-    print(f"MERGING WITH OVERLAP HANDLING: {len(region_components)} components")
-    print(f"{'='*60}")
-    
-    minr, minc, maxr, maxc = roi_bbox
-    roi_height = maxr - minr
-    roi_width = maxc - minc
-    
-    # ==============================================
-    # 1. CREATE DATA STRUCTURES
-    # ==============================================
-    # We'll track multiple candidates for each pixel
-    pixel_candidates = {}  # (r, c) -> list of (segment_idx, color)
-    
-    # Process all segments to collect candidates
-    for seg_idx, seg in enumerate(region_components):
-        seg_top_left = seg['top_left']
-        seg_shape = seg['shape']
-        seg_palette = seg['palette']
-        seg_indices = np.array(seg['indices']).reshape(seg_shape)
-        
-        rel_row = seg_top_left[0] - minr
-        rel_col = seg_top_left[1] - minc
-        
-        for r in range(seg_shape[0]):
-            for c in range(seg_shape[1]):
-                roi_r = rel_row + r
-                roi_c = rel_col + c
-                
-                if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
-                    seg_pixel_idx = seg_indices[r, c]
-                    
-                    if seg_pixel_idx != 1:  # Colored pixel
-                        color = tuple(seg_palette[seg_pixel_idx])
-                        
-                        key = (roi_r, roi_c)
-                        if key not in pixel_candidates:
-                            pixel_candidates[key] = []
-                        
-                        pixel_candidates[key].append((seg_idx, color))
-    
-    # ==============================================
-    # 2. RESOLVE OVERLAPS
-    # ==============================================
-    # Create final canvas
+    # Create canvas
     roi_indices = np.ones((roi_height, roi_width), dtype=np.uint16)
     
     # Collect all colors
@@ -2085,54 +1811,340 @@ def merge_region_components_overlap(region_components, roi_bbox):
     all_colors.append(black_color)
     color_to_index[black_color] = 1
     
-    # Resolve each pixel
-    overlap_count = 0
-    for (r, c), candidates in pixel_candidates.items():
-        if len(candidates) == 1:
-            # No overlap, just use this color
-            _, color = candidates[0]
-            
-            if color not in color_to_index:
-                color_to_index[color] = len(all_colors)
-                all_colors.append(color)
-            
-            roi_indices[r, c] = color_to_index[color]
-        else:
-            # Overlap - choose the "best" candidate
-            overlap_count += 1
-            
-            # Simple strategy: choose the first segment's color
-            # (could be improved to choose based on segment importance)
-            _, color = candidates[0]
-            
-            if color not in color_to_index:
-                color_to_index[color] = len(all_colors)
-                all_colors.append(color)
-            
-            roi_indices[r, c] = color_to_index[color]
+    # Process segments (last segment has priority)
+    for seg in reversed(region_components):  # Reverse so last segments win
+        seg_top_left = seg['top_left']
+        seg_shape = seg['shape']
+        seg_palette = seg['palette']
+        seg_indices = np.array(seg['indices']).reshape(seg_shape)
+        
+        # Calculate position relative to ROI
+        rel_row = seg_top_left[0] - minr
+        rel_col = seg_top_left[1] - minc
+        
+        # Place segment (colored pixels override anything)
+        for r in range(seg_shape[0]):
+            for c in range(seg_shape[1]):
+                roi_r = rel_row + r
+                roi_c = rel_col + c
+                
+                if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
+                    seg_pixel_idx = seg_indices[r, c]
+                    
+                    if seg_pixel_idx != 1:  # Colored pixel
+                        color = tuple(seg_palette[seg_pixel_idx])
+                        
+                        # Map color to combined palette
+                        if color not in color_to_index:
+                            color_to_index[color] = len(all_colors)
+                            all_colors.append(color)
+                        
+                        # Place the color index (overwrites anything)
+                        roi_indices[roi_r, roi_c] = color_to_index[color]
     
     # ==============================================
-    # 3. CREATE MERGED SEGMENT
+    # 2. IDENTIFY BORDER PIXELS FAST
     # ==============================================
-    black_pixels = np.sum(roi_indices == 1)
+    print("Identifying border pixels...")
+    
+    # Border pixels: pixels adjacent to a different colored pixel
+    border_mask = np.zeros((roi_height, roi_width), dtype=bool)
+    non_border_mask = np.zeros((roi_height, roi_width), dtype=bool)
+    
+    # Simple 4-connected neighbor check
+    for r in range(roi_height):
+        for c in range(roi_width):
+            current_idx = roi_indices[r, c]
+            if current_idx != 1:  # Not black
+                is_border = False
+                
+                # Check 4 neighbors
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < roi_height and 0 <= nc < roi_width:
+                        neighbor_idx = roi_indices[nr, nc]
+                        if neighbor_idx != 1 and neighbor_idx != current_idx:
+                            is_border = True
+                            break
+                
+                if is_border:
+                    border_mask[r, c] = True
+                else:
+                    non_border_mask[r, c] = True
+    
+    border_count = np.sum(border_mask)
+    print(f"  Border pixels: {border_count:,}")
+    
+    # ==============================================
+    # 3. FAST BORDER SMOOTHING
+    # ==============================================
+    print("Smoothing border pixels...")
+    
+    # Create a copy for smoothing
+    smoothed_indices = roi_indices.copy()
+    
+    # Pre-cache palette as numpy array for faster access
+    palette_array = np.array(all_colors)
+    
+    # Process only border pixels
+    border_coords = np.where(border_mask)
+    smoothed_count = 0
+    
+    for r, c in zip(border_coords[0], border_coords[1]):
+        current_idx = roi_indices[r, c]
+        
+        # Collect non-border neighbor colors (excluding black)
+        neighbor_colors = []
+        
+        # Check 8-connected neighbors
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < roi_height and 0 <= nc < roi_width:
+                    neighbor_idx = roi_indices[nr, nc]
+                    
+                    # If neighbor is non-border and not black, use its color
+                    if neighbor_idx != 1 and non_border_mask[nr, nc]:
+                        neighbor_colors.append(palette_array[neighbor_idx])
+        
+        if neighbor_colors:
+            # Average the neighbor colors
+            avg_color = np.mean(neighbor_colors, axis=0).astype(np.uint8)
+            
+            # Find closest color in palette (skip black at index 1)
+            # Simple linear search is fine since palette is small
+            min_dist = float('inf')
+            best_idx = current_idx
+            
+            for i in range(len(all_colors)):
+                if i != 1:  # Skip black
+                    dist = np.sum((palette_array[i] - avg_color) ** 2)
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_idx = i
+            
+            if best_idx != current_idx:
+                smoothed_indices[r, c] = best_idx
+                smoothed_count += 1
+    
+    # ==============================================
+    # 4. CREATE FINAL MERGED SEGMENT
+    # ==============================================
+    black_pixels = np.sum(smoothed_indices == 1)
     colored_pixels = roi_height * roi_width - black_pixels
     
-    print(f"\nOverlap statistics:")
-    print(f"  Total pixels: {roi_height * roi_width:,}")
-    print(f"  Pixels with candidates: {len(pixel_candidates):,}")
-    print(f"  Overlap pixels (multiple candidates): {overlap_count:,}")
-    print(f"  Final colored pixels: {colored_pixels:,}")
-    print(f"  Unique colors: {len(all_colors)}")
+    print(f"\nFast border smoothing complete:")
+    print(f"  ROI size: {roi_height}x{roi_width} = {roi_height*roi_width:,} pixels")
+    print(f"  Colored pixels: {colored_pixels:,}")
+    print(f"  Black pixels: {black_pixels:,} ({black_pixels/(roi_height*roi_width)*100:.1f}%)")
+    print(f"  Palette size: {len(all_colors)} colors")
+    print(f"  Border pixels smoothed: {smoothed_count:,}/{border_count:,}")
     
     merged_segment = {
         'top_left': (minr, minc),
         'shape': (roi_height, roi_width),
         'palette': all_colors,
-        'indices': roi_indices.flatten().tolist(),
-        'encoding': 'roi_merged_overlap'
+        'indices': smoothed_indices.flatten().tolist(),
+        'encoding': 'roi_merged_fast_smooth'
     }
     
     return [merged_segment]
+
+
+def fast_border_smoothing_simple(region_components, roi_bbox):
+    """
+    Fast border smoothing using vectorized operations.
+    Border pixels are replaced with average of their neighbors.
+    """
+    if not region_components:
+        return []
+    
+    if len(region_components) == 1:
+        return region_components
+    
+    print(f"\n{'='*60}")
+    print(f"FAST BORDER SMOOTHING: {len(region_components)} components")
+    print(f"{'='*60}")
+    
+    minr, minc, maxr, maxc = roi_bbox
+    roi_height = maxr - minr
+    roi_width = maxc - minc
+    
+    # ==============================================
+    # 1. FAST MERGE (NO SMOOTHING)
+    # ==============================================
+    print("Merging components...")
+    
+    # Create canvas
+    roi_indices = np.ones((roi_height, roi_width), dtype=np.uint16)
+    
+    # Collect colors
+    all_colors = [(0, 0, 0)]  # Black at index 1
+    color_to_idx = {(0, 0, 0): 1}
+    
+    # Place segments (last wins)
+    for seg in reversed(region_components):
+        seg_top_left = seg['top_left']
+        seg_shape = seg['shape']
+        seg_palette = seg['palette']
+        seg_indices = np.array(seg['indices']).reshape(seg_shape)
+        
+        rel_row = seg_top_left[0] - minr
+        rel_col = seg_top_left[1] - minc
+        
+        for r in range(seg_shape[0]):
+            for c in range(seg_shape[1]):
+                roi_r = rel_row + r
+                roi_c = rel_col + c
+                
+                if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
+                    seg_idx = seg_indices[r, c]
+                    if seg_idx != 1:
+                        color = tuple(seg_palette[seg_idx])
+                        if color not in color_to_idx:
+                            color_to_idx[color] = len(all_colors)
+                            all_colors.append(color)
+                        roi_indices[roi_r, roi_c] = color_to_idx[color]
+    
+    print(f"  ROI: {roi_height}x{roi_width} pixels")
+    print(f"  Colors: {len(all_colors)}")
+    
+    # ==============================================
+    # 2. VECTORIZED BORDER DETECTION
+    # ==============================================
+    print("Detecting border pixels...")
+    
+    # Create mask of non-black pixels
+    non_black_mask = (roi_indices != 1)
+    
+    # Detect borders using convolution - MUCH FASTER
+    from scipy.ndimage import convolve
+    
+    # Create border mask: pixel is border if any neighbor is different
+    kernel = np.array([[0, 1, 0],
+                       [1, 0, 1],
+                       [0, 1, 0]]) / 4.0
+    
+    # Use convolution to check neighbors
+    # This is approximate but fast
+    convolved = convolve(roi_indices.astype(float), kernel, mode='reflect')
+    
+    # Border if value differs from center
+    border_mask = np.abs(convolved - roi_indices) > 0.1
+    border_mask &= non_black_mask  # Only non-black pixels can be borders
+    
+    border_count = np.sum(border_mask)
+    print(f"  Border pixels detected: {border_count:,}")
+    
+    if border_count == 0:
+        print("  No borders to smooth!")
+        return [{
+            'top_left': (minr, minc),
+            'shape': (roi_height, roi_width),
+            'palette': all_colors,
+            'indices': roi_indices.flatten().tolist(),
+            'encoding': 'roi_merged_no_smooth'
+        }]
+    
+    # ==============================================
+    # 3. FAST BORDER REPLACEMENT
+    # ==============================================
+    print("Replacing border pixels...")
+    
+    # Convert to RGB image for averaging
+    palette_array = np.array(all_colors, dtype=np.uint8)
+    rgb_image = palette_array[roi_indices]
+    
+    # Create smoothed copy
+    smoothed_rgb = rgb_image.copy()
+    
+    # Get border coordinates
+    border_coords = np.where(border_mask)
+    
+    # For each border pixel, average its 4 neighbors
+    for idx in range(len(border_coords[0])):
+        r, c = border_coords[0][idx], border_coords[1][idx]
+        
+        # Get 4-connected neighbors
+        neighbors = []
+        
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < roi_height and 0 <= nc < roi_width:
+                if not border_mask[nr, nc]:  # Only use non-border neighbors
+                    neighbors.append(rgb_image[nr, nc])
+        
+        if neighbors:
+            # Average the neighbor colors
+            avg_color = np.mean(neighbors, axis=0).astype(np.uint8)
+            smoothed_rgb[r, c] = avg_color
+    
+    # ==============================================
+    # 4. CONVERT BACK TO INDEXES
+    # ==============================================
+    print("Converting back to palette indexes...")
+    
+    # Create color to index mapping for fast lookup
+    color_map = {tuple(color): idx for idx, color in enumerate(all_colors)}
+    
+    # Convert smoothed RGB back to indices
+    smoothed_indices = np.ones((roi_height, roi_width), dtype=np.uint16)
+    
+    # Only update border pixels (non-border pixels keep original index)
+    smoothed_indices = roi_indices.copy()
+    
+    # Update border pixels
+    for idx in range(len(border_coords[0])):
+        r, c = border_coords[0][idx], border_coords[1][idx]
+        color = tuple(smoothed_rgb[r, c])
+        
+        if color in color_map:
+            smoothed_indices[r, c] = color_map[color]
+        else:
+            # Find closest color
+            min_dist = float('inf')
+            best_idx = 1  # Default to black
+            
+            color_np = np.array(color)
+            for i, pal_color in enumerate(all_colors):
+                if i != 1:  # Skip black
+                    dist = np.sum((np.array(pal_color) - color_np) ** 2)
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_idx = i
+            
+            smoothed_indices[r, c] = best_idx
+    
+    # ==============================================
+    # 5. CREATE RESULT
+    # ==============================================
+    print(f"\nFast border smoothing complete!")
+    
+    return [{
+        'top_left': (minr, minc),
+        'shape': (roi_height, roi_width),
+        'palette': all_colors,
+        'indices': smoothed_indices.flatten().tolist(),
+        'encoding': 'roi_merged_fast_smooth'
+    }]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -2475,7 +2487,7 @@ if __name__ == "__main__":
             
             # Choose merging strategy
             # Option 1: Simple merge (colored pixels override black)
-            merged_components = merge_region_components_simple(region_components, roi_bbox)
+            merged_components = fast_border_smoothing_simple(region_components, roi_bbox)
             
             # Option 2: Merge with segment sorting
             # merged_components = merge_region_components_better(region_components, roi_bbox)
