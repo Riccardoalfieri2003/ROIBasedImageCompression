@@ -1157,134 +1157,14 @@ def calculate_psnr_simple(original, reconstructed, mask):
 
 
 
-
-
-
-
-"""
-def compress_cropped_segment_with_shared_qtable(cropped_segment, top_left_coords, shared_qtable, quality_factor=75):
-
-    if cropped_segment.size == 0:
-        return None
-    
-    h, w = cropped_segment.shape[:2]
-    num_pixels = h * w
-    
-    # Create transparency mask (non-black pixels)
-    # IMPORTANT: We consider a pixel "non-black" if ANY channel > threshold
-    transparency_mask = np.any(cropped_segment > 10, axis=2)  # Threshold to avoid noise
-    
-    # Count only actual content pixels (non-black)
-    content_pixels = np.sum(transparency_mask)
-    original_size = content_pixels * 3  # Only count content pixels
-    
-    print(f"      Crop size: {h}x{w} ({num_pixels:,} total, {content_pixels:,} content)")
-    
-    # Prepare compressed data structure
-    compressed_data = {
-        'method': 'dct_shared_qtable_cropped',
-        'original_size': original_size,
-        'cropped_shape': (h, w),
-        'top_left_coords': top_left_coords,  # (row, col) in full image
-        'transparency_mask': transparency_mask.astype(np.uint8),  # Store mask
-        'content_pixels': int(content_pixels),
-        'compressed_blocks': [],
-        'use_shared_qtable': True,
-        'quality_factor': quality_factor
-    }
-    
-    # Adjust quantization table
-    scale_factor = 1.0
-    if quality_factor < 50:
-        scale_factor = 50.0 / quality_factor
-    else:
-        scale_factor = (100 - quality_factor) / 50.0
-    
-    qtable_scaled = np.clip(np.round(shared_qtable * scale_factor), 1, 255).astype(np.uint8)
-    
-    # Process 8x8 blocks in the cropped segment
-    total_blocks = 0
-    compressed_size = 0
-    
-    for i in range(0, h, 8):
-        for j in range(0, w, 8):
-            i_end = min(i + 8, h)
-            j_end = min(j + 8, w)
-            block_height = i_end - i
-            block_width = j_end - j
-            
-            # Check if block contains any content pixels (non-black)
-            block_mask = transparency_mask[i:i_end, j:j_end]
-            if np.sum(block_mask) == 0:
-                continue  # Skip all-black blocks
-            
-            # Get block
-            block = cropped_segment[i:i_end, j:j_end]
-            
-            # Pad if necessary
-            if block_height < 8 or block_width < 8:
-                block_padded = np.zeros((8, 8, 3), dtype=np.uint8)
-                block_padded[:block_height, :block_width] = block
-                block = block_padded
-            
-            # Convert to YCbCr
-            block_ycbcr = cv2.cvtColor(block, cv2.COLOR_RGB2YCrCb)
-            
-            compressed_block = {}
-            
-            # Process each channel
-            for ch in range(3):
-                channel_data = block_ycbcr[:, :, ch].astype(np.float32) - 128
-                dct_coeffs = cv2.dct(channel_data)
-                quantized = np.round(dct_coeffs / qtable_scaled).astype(np.int16)
-                
-                # Store non-zero coefficients
-                non_zero_mask = quantized != 0
-                non_zero_coeffs = quantized[non_zero_mask]
-                
-                if len(non_zero_coeffs) > 0:
-                    positions = np.argwhere(non_zero_mask).tolist()
-                    values = non_zero_coeffs.tolist()
-                    
-                    compressed_block[f'channel_{ch}'] = {
-                        'positions': positions,
-                        'values': values,
-                        'num_coeffs': len(values)
-                    }
-                    
-                    compressed_size += len(values) * 4  # 2 bytes per position + 2 per value
-                else:
-                    compressed_block[f'channel_{ch}'] = {
-                        'positions': [],
-                        'values': [],
-                        'num_coeffs': 0
-                    }
-            
-            compressed_data['compressed_blocks'].append({
-                'position': (i, j),  # Position within cropped image
-                'data': compressed_block,
-                'block_size': (block_height, block_width)
-            })
-            total_blocks += 1
-    
-    compressed_size += 100  # Metadata overhead (mask, coords, etc.)
-    
-    compressed_data['compressed_size'] = compressed_size
-    compressed_data['compression_ratio'] = original_size / compressed_size if compressed_size > 0 else 0
-    compressed_data['num_blocks'] = total_blocks
-    
-    print(f"      Blocks to compress: {total_blocks}")
-    
-    return compressed_data
-"""
-
 import numpy as np
 import cv2
 from sklearn.cluster import MiniBatchKMeans
 
-def compress_small_region_color_quantization(region_image, top_left_coords, quality_factor=50):
+
+def compress_small_region_color_quantization(region_image, top_left_coords, max_colors=32):
     """
-    Compress small region using color quantization with quality-to-colors mapping.
+    Compress small region using color quantization with max colors control.
     """
     if region_image is None or region_image.size == 0:
         return None
@@ -1294,43 +1174,27 @@ def compress_small_region_color_quantization(region_image, top_left_coords, qual
     
     print(f"Compressing {h}x{w} region with color quantization")
     print(f"Top-left: {top_left_coords}")
+    print(f"Max colors: {max_colors}")
     
     # ==============================================
-    # 1. QUALITY FACTOR TO NUMBER OF COLORS MAPPING
+    # 1. GET UNIQUE COLORS (WITHOUT DUPLICATES)
     # ==============================================
-    # Quality factor controls number of colors in palette
-    # Higher quality = more colors = better fidelity = larger size
+    # Get all unique colors from the image
+    pixels = region_image.reshape(-1, 3)
     
-    # Map quality (0-100) to number of colors (2-256)
-    if quality_factor <= 10:
-        n_colors = 2  # Binary image
-    elif quality_factor <= 30:
-        n_colors = 4  # Very low quality
-    elif quality_factor <= 50:
-        n_colors = 8  # Low quality
-    elif quality_factor <= 70:
-        n_colors = 16  # Medium quality
-    elif quality_factor <= 85:
-        n_colors = 32  # Good quality
-    elif quality_factor <= 95:
-        n_colors = 64  # High quality
-    else:
-        n_colors = 128  # Very high quality
+    # Method 1: Use np.unique - removes duplicates
+    unique_colors_array = np.unique(pixels, axis=0)
+    unique_colors = len(unique_colors_array)
     
-    # Cap based on actual pixel count (can't have more colors than pixels)
-    unique_colors = len(np.unique(region_image.reshape(-1, 3), axis=0))
-    n_colors = min(n_colors, unique_colors, 256)
+    print(f"Unique colors in image: {unique_colors:,}")
     
-    print(f"Quality {quality_factor} → {n_colors} colors (max possible: {unique_colors})")
-    
-    # ==============================================
-    # 2. COLOR QUANTIZATION USING K-MEANS
-    # ==============================================
-    # Reshape image to list of pixels
-    pixels = region_image.reshape(-1, 3).astype(np.float32)
+    # Cap max_colors based on actual unique colors
+    if max_colors > unique_colors:
+        print(f"Reducing max_colors from {max_colors} to {unique_colors} (actual unique colors)")
+        max_colors = unique_colors
     
     # Special case: Single color region
-    if n_colors == 1 or unique_colors == 1:
+    if max_colors == 1 or unique_colors == 1:
         avg_color = np.mean(pixels, axis=0).astype(np.uint8)
         
         compressed_data = {
@@ -1339,89 +1203,148 @@ def compress_small_region_color_quantization(region_image, top_left_coords, qual
             'shape': (h, w),
             'palette': [avg_color.tolist()],  # Single color palette
             'indices': [0] * total_pixels,  # All indices are 0
-            'n_colors': 1,
-            'quality': quality_factor,
+            'max_colors': 1,
+            'actual_colors': 1,
             'original_size': total_pixels * 3
         }
         
-        # Calculate compressed size
-        compressed_size = (
-            3 +  # 1 color * 3 bytes
-            1 * total_pixels +  # 1 byte per pixel for index (could be optimized)
-            50  # Metadata overhead
-        )
+        compressed_size = 3 + total_pixels + 50
         compressed_data['compressed_size'] = compressed_size
+        
+        # Calculate PSNR (perfect for single color)
+        compressed_data['psnr'] = float('inf')
         
         print(f"Single color region: {avg_color}")
         return compressed_data
     
-    # Apply K-means clustering for color quantization
-    kmeans = MiniBatchKMeans(
-        n_clusters=n_colors,
-        random_state=42,
-        batch_size=min(100, len(pixels)),
-        max_iter=20
-    )
-    
-    # Fit and predict
-    labels = kmeans.fit_predict(pixels)
-    
-    # Get palette (cluster centers)
-    palette = kmeans.cluster_centers_.astype(np.uint8)
+    # ==============================================
+    # 2. COLOR QUANTIZATION WITH UNIQUE COLORS ENFORCED
+    # ==============================================
+    # If we have few colors already, just use them directly
+    if unique_colors <= max_colors:
+        print(f"Using {unique_colors} unique colors directly (no quantization needed)")
+        
+        # Create palette from unique colors
+        palette = unique_colors_array[:max_colors]
+        
+        # Create mapping from color to index
+        color_to_index = {}
+        for idx, color in enumerate(palette):
+            color_tuple = tuple(color)
+            color_to_index[color_tuple] = idx
+        
+        # Create index map
+        indices_flat = []
+        for pixel in pixels:
+            color_tuple = tuple(pixel)
+            indices_flat.append(color_to_index[color_tuple])
+        
+        index_map = np.array(indices_flat).reshape(h, w)
+        
+    else:
+        # Need to quantize to reduce colors
+        print(f"Quantizing {unique_colors:,} colors → {max_colors} colors")
+        
+        # Apply K-means clustering
+        pixels_float = pixels.astype(np.float32)
+        
+        kmeans = MiniBatchKMeans(
+            n_clusters=max_colors,
+            random_state=42,
+            batch_size=min(100, len(pixels_float)),
+            max_iter=20
+        )
+        
+        # Fit and predict
+        labels = kmeans.fit_predict(pixels_float)
+        
+        # Get palette (cluster centers)
+        palette_raw = kmeans.cluster_centers_.astype(np.uint8)
+        
+        # ==============================================
+        # 3. REMOVE DUPLICATE COLORS FROM PALETTE
+        # ==============================================
+        print("Removing duplicate colors from palette...")
+        
+        # Convert palette to list of tuples for easy duplicate detection
+        palette_tuples = [tuple(color) for color in palette_raw]
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_palette_tuples = []
+        
+        for color_tuple in palette_tuples:
+            if color_tuple not in seen:
+                seen.add(color_tuple)
+                unique_palette_tuples.append(color_tuple)
+        
+        # Count actual unique colors after deduplication
+        actual_colors = len(unique_palette_tuples)
+        
+        print(f"Palette after deduplication: {actual_colors} colors (from {max_colors})")
+        
+        # Convert back to numpy array
+        palette = np.array([list(color) for color in unique_palette_tuples], dtype=np.uint8)
+        
+        # ==============================================
+        # 4. RE-INDEX LABELS AFTER DEDUPLICATION
+        # ==============================================
+        # Need to remap labels because we removed duplicate palette entries
+        
+        # Create mapping from old cluster index to new palette index
+        old_to_new = {}
+        
+        # Track which new index each old cluster should map to
+        for old_idx, color_tuple in enumerate(palette_tuples):
+            if color_tuple not in old_to_new:
+                # Find new index for this color
+                new_idx = unique_palette_tuples.index(color_tuple)
+                old_to_new[old_idx] = new_idx
+        
+        # Remap all labels
+        remapped_labels = np.zeros_like(labels)
+        for old_idx, new_idx in old_to_new.items():
+            mask = labels == old_idx
+            remapped_labels[mask] = new_idx
+        
+        labels = remapped_labels
+        index_map = labels.reshape(h, w)
+        
+        # Create indices list
+        indices_flat = index_map.flatten().tolist()
     
     # ==============================================
-    # 3. ENCODE INDICES EFFICIENTLY
+    # 5. CALCULATE COMPRESSION STATS
     # ==============================================
-    # Reshape labels back to image shape
-    index_map = labels.reshape(h, w)
+    actual_colors = len(palette)
     
     # Choose optimal data type for indices
-    if n_colors <= 256:
+    if actual_colors <= 256:
         index_dtype = np.uint8
         bytes_per_index = 1
-    elif n_colors <= 65536:
+    else:
         index_dtype = np.uint16
         bytes_per_index = 2
-    else:
-        index_dtype = np.uint32
-        bytes_per_index = 4
     
-    index_map = index_map.astype(index_dtype)
-    
-    # Option 1: Simple flatten (good for small images)
-    indices_flat = index_map.flatten().tolist()
-    
-    # Option 2: Run-length encoding for better compression
-    # (Uncomment if your regions have large uniform areas)
-    # indices_rle = run_length_encode(index_map.flatten())
-    
-    # ==============================================
-    # 4. CALCULATE COMPRESSION STATS
-    # ==============================================
-    original_size = total_pixels * 3  # RGB bytes
-    
-    # Compressed size calculation:
-    # - Palette: n_colors * 3 bytes
-    # - Indices: total_pixels * bytes_per_index
-    # - Metadata: ~50 bytes
-    palette_size = n_colors * 3
+    # Recalculate with actual_colors
+    original_size = total_pixels * 3
+    palette_size = actual_colors * 3
     indices_size = total_pixels * bytes_per_index
     metadata_size = 50
     
     compressed_size = palette_size + indices_size + metadata_size
     
     # ==============================================
-    # 5. CREATE COMPRESSED DATA STRUCTURE
+    # 6. CREATE COMPRESSED DATA STRUCTURE
     # ==============================================
     compressed_data = {
         'method': 'color_quantization',
-        'top_left': top_left_coords,  # Essential for placement
-        'shape': (h, w),              # Essential for reconstruction
-        'palette': palette.tolist(),  # Color palette
-        'indices': indices_flat,      # Pixel indices
-        # 'indices_rle': indices_rle,  # Alternative: RLE encoded
-        'n_colors': n_colors,
-        'quality': quality_factor,
+        'top_left': top_left_coords,
+        'shape': (h, w),
+        'palette': palette.tolist(),  # No duplicate colors
+        'indices': indices_flat,
+        'max_colors': max_colors,
+        'actual_colors': actual_colors,  # Actual number of unique colors in palette
         'index_dtype': str(index_dtype),
         'original_size': original_size,
         'compressed_size': compressed_size,
@@ -1429,10 +1352,10 @@ def compress_small_region_color_quantization(region_image, top_left_coords, qual
     }
     
     # ==============================================
-    # 6. VALIDATE AND ADD VISUALIZATION
+    # 7. VALIDATION AND PSNR CALCULATION
     # ==============================================
-    # Quick reconstruction for validation
-    reconstructed = palette[labels].reshape(h, w, 3)
+    # Reconstruct image for validation
+    reconstructed = palette[index_map].reshape(h, w, 3)
     
     # Calculate PSNR
     mse = np.mean((region_image.astype(float) - reconstructed.astype(float)) ** 2)
@@ -1441,13 +1364,14 @@ def compress_small_region_color_quantization(region_image, top_left_coords, qual
     compressed_data['mse'] = float(mse)
     compressed_data['psnr'] = float(psnr)
     
+    print(f"Palette: {actual_colors} unique colors")
     print(f"Original: {original_size:,} bytes")
     print(f"Compressed: {compressed_size:,} bytes")
     print(f"Ratio: {original_size/compressed_size:.2f}:1")
     print(f"PSNR: {psnr:.2f} dB")
+    print(f"Color reduction: {unique_colors} → {actual_colors} colors")
     
     return compressed_data
-
 
 def decompress_color_quantization(compressed_data):
     """
@@ -1785,8 +1709,6 @@ if __name__ == "__main__":
             
      
             
-            
-
         
             print(f"segment_image_cropped shape: {segment_image_cropped.shape}")
 
@@ -1797,13 +1719,30 @@ if __name__ == "__main__":
             seg_compression = compress_small_region_color_quantization(
                 segment_image_cropped,
                 (top_left_abs_row, top_left_abs_col),
-                quality_factor=75  # Control fidelity vs compression
+                max_colors=32
             )
-
 
             if seg_compression is None:
                 continue
+
+            all_segments_compressed.append(seg_compression)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             
+            """
             # ==============================================
             # 3. RECONSTRUCT 
             # ==============================================
@@ -1825,7 +1764,7 @@ if __name__ == "__main__":
             compressed_size = seg_compression['compressed_size']
             compression_ratio = seg_compression['compression_ratio']
             psnr = seg_compression['psnr']
-            n_colors = seg_compression['n_colors']
+            n_colors = seg_compression['actual_colors']
 
             # Print stats in a clean format
             print(f"Segment {seg_idx+1} Summary:")
@@ -1972,4 +1911,4 @@ if __name__ == "__main__":
             print(f"   PSNR:        {psnr:>8.2f} dB")
             print(f"   Palette:     {n_colors:>8} colors")
             print(f"{'='*60}")
-            
+            """
