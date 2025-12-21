@@ -1401,6 +1401,7 @@ def hierarchical_color_quantization(region_image, top_left_coords, quality=85):
         # Single color region
         palette = unique_colors
         indices_flat = [0] * total_pixels
+        actual_colors = 1
     else:
         # ==============================================
         # 2. DETERMINE TARGET CLUSTERS BASED ON QUALITY
@@ -1413,138 +1414,47 @@ def hierarchical_color_quantization(region_image, top_left_coords, quality=85):
               f"(from {unique_count} colors)")
         
         # ==============================================
-        # 3. PERFORM HIERARCHICAL CLUSTERING
+        # 3. PERFORM CLUSTERING BASED ON SIZE
         # ==============================================
         if unique_count <= 2000:  # Reasonable for hierarchical clustering
-            # Convert to Lab color space for perceptual clustering
-            try:
-                from skimage.color import rgb2lab
-                colors_for_clustering = rgb2lab(unique_colors.reshape(-1, 1, 3)).reshape(-1, 3)
-                print(f"  Using Lab color space for perceptual clustering")
-            except ImportError:
-                colors_for_clustering = unique_colors.astype(float)
-                print(f"  Using RGB color space (install scikit-image for better results)")
-            
-            # Weight colors by frequency
-            weights = counts / counts.max()
-            weighted_colors = colors_for_clustering * weights[:, np.newaxis]
-            
-            # Calculate pair-wise distances
-            from scipy.spatial.distance import pdist, squareform
-            distances = pdist(weighted_colors, metric='euclidean')
-            
-            # Perform hierarchical clustering
-            from scipy.cluster.hierarchy import linkage, fcluster
-            Z = linkage(distances, method='ward')
-            
-            # Cut dendrogram to get desired number of clusters
-            cluster_labels = fcluster(Z, t=target_clusters, criterion='maxclust')
-            
-            # ==============================================
-            # 4. CREATE CLUSTER CENTERS (PALETTE)
-            # ==============================================
-            palette = []
-            
-            for cluster_id in range(1, target_clusters + 1):
-                mask = cluster_labels == cluster_id
-                if np.any(mask):
-                    # Weighted average of colors in this cluster
-                    cluster_colors_rgb = unique_colors[mask]
-                    cluster_counts = counts[mask]
-                    
-                    # Weighted average in RGB space
-                    weighted_avg = np.average(
-                        cluster_colors_rgb.astype(float), 
-                        axis=0, 
-                        weights=cluster_counts
-                    )
-                    palette.append(weighted_avg.astype(np.uint8))
-            
-            palette = np.array(palette)
-            actual_clusters = len(palette)
-            
-            print(f"  Created {actual_clusters} color clusters")
-            
-            # ==============================================
-            # 5. MAP EACH UNIQUE COLOR TO ITS CLUSTER
-            # ==============================================
-            color_to_cluster = {}
-            for i, color in enumerate(unique_colors):
-                cluster_idx = cluster_labels[i] - 1  # Convert to 0-based
-                color_to_cluster[tuple(color)] = cluster_idx
-            
-            # Create indices for all pixels
-            indices_flat = [color_to_cluster[tuple(pixel)] for pixel in pixels]
-            
+            palette, indices_flat, actual_colors = cluster_hierarchical_small(
+                unique_colors, counts, target_clusters, pixels
+            )
         else:
             # Too many unique colors for hierarchical clustering
-            print(f"  Too many unique colors ({unique_count:,}), using sampling + K-means")
-            
-            # Sample weighted by frequency
-            sample_size = min(2000, unique_count)
-            probs = counts / counts.sum()
-            sample_indices = np.random.choice(
-                unique_count, 
-                size=sample_size, 
-                replace=False, 
-                p=probs
+            print(f"  Too many unique colors ({unique_count:,}), using optimized clustering")
+            palette, indices_flat, actual_colors = cluster_large_dataset(
+                unique_colors, counts, target_clusters, pixels
             )
-            
-            sample_colors = unique_colors[sample_indices]
-            sample_counts = counts[sample_indices]
-            
-            # Apply K-means to samples
-            from sklearn.cluster import MiniBatchKMeans
-            
-            # Weight samples by frequency
-            sample_weights = sample_counts / sample_counts.max()
-            weighted_samples = sample_colors.astype(float) * sample_weights[:, np.newaxis]
-            
-            kmeans = MiniBatchKMeans(
-                n_clusters=target_clusters, 
-                random_state=42, 
-                n_init=3,
-                batch_size=256
-            )
-            
-            kmeans.fit(weighted_samples)
-            
-            # Get palette from K-means
-            palette = kmeans.cluster_centers_.astype(np.uint8)
-            
-            # Map all colors to nearest palette color
-            color_to_palette = {}
-            for i, color in enumerate(unique_colors):
-                distances = np.sqrt(np.sum((palette - color) ** 2, axis=1))
-                nearest_idx = np.argmin(distances)
-                color_to_palette[tuple(color)] = nearest_idx
-            
-            indices_flat = [color_to_palette[tuple(pixel)] for pixel in pixels]
+    
+    # After clustering functions, we should have:
+    # palette, indices_flat, actual_colors defined
     
     # ==============================================
-    # 6. CALCULATE SIMILARITY METRICS
+    # 4. CALCULATE SIMILARITY METRICS
     # ==============================================
-    actual_colors = len(palette)
-    
     # Calculate color similarity preservation
     original_colors_set = set(tuple(color) for color in unique_colors)
     compressed_colors_set = set(tuple(color) for color in palette)
     
     # Find closest matches for each original color
     avg_color_error = 0
-    for orig_color in unique_colors[:100]:  # Sample for speed
+    sample_size = min(100, len(unique_colors))
+    sample_indices = np.random.choice(len(unique_colors), sample_size, replace=False)
+    
+    for idx in sample_indices:
+        orig_color = unique_colors[idx]
         distances = np.sqrt(np.sum((palette - orig_color) ** 2, axis=1))
         avg_color_error += distances.min()
     
-    if len(unique_colors) > 0:
-        avg_color_error = avg_color_error / min(100, len(unique_colors))
+    avg_color_error = avg_color_error / sample_size
     
     print(f"  Average color error: {avg_color_error:.1f}")
     print(f"  Color reduction: {unique_count:,} → {actual_colors}")
     print(f"  Reduction ratio: {unique_count/actual_colors:.1f}:1")
     
     # ==============================================
-    # 7. CREATE COMPRESSED DATA STRUCTURE
+    # 5. CREATE COMPRESSED DATA STRUCTURE
     # ==============================================
     compressed_data = {
         'method': 'hierarchical_quantization',
@@ -1589,6 +1499,177 @@ def hierarchical_color_quantization(region_image, top_left_coords, quality=85):
     print(f"  Ratio: {compressed_data['compression_ratio']:.2f}:1")
     
     return compressed_data
+def cluster_hierarchical_small(unique_colors, counts, target_clusters, pixels):
+    """
+    Cluster small datasets (<2000 colors) using hierarchical clustering.
+    """
+    # Convert to Lab color space for perceptual clustering
+    try:
+        from skimage.color import rgb2lab
+        colors_for_clustering = rgb2lab(unique_colors.reshape(-1, 1, 3)).reshape(-1, 3)
+    except ImportError:
+        colors_for_clustering = unique_colors.astype(float)
+    
+    # Weight colors by frequency
+    weights = counts / counts.max()
+    weighted_colors = colors_for_clustering * weights[:, np.newaxis]
+    
+    # Calculate pair-wise distances
+    from scipy.spatial.distance import pdist
+    from scipy.cluster.hierarchy import linkage, fcluster
+    
+    distances = pdist(weighted_colors, metric='euclidean')
+    
+    # Perform hierarchical clustering
+    Z = linkage(distances, method='ward')
+    
+    # Cut dendrogram to get desired number of clusters
+    cluster_labels = fcluster(Z, t=target_clusters, criterion='maxclust')
+    
+    # Create cluster centers (palette)
+    palette = []
+    
+    for cluster_id in range(1, target_clusters + 1):
+        mask = cluster_labels == cluster_id
+        if np.any(mask):
+            # Weighted average of colors in this cluster
+            cluster_colors_rgb = unique_colors[mask]
+            cluster_counts = counts[mask]
+            
+            weighted_avg = np.average(
+                cluster_colors_rgb.astype(float), 
+                axis=0, 
+                weights=cluster_counts
+            )
+            palette.append(weighted_avg.astype(np.uint8))
+    
+    palette = np.array(palette)
+    actual_clusters = len(palette)
+    
+    print(f"  Created {actual_clusters} color clusters (hierarchical)")
+    
+    # Map each unique color to its cluster
+    color_to_cluster = {}
+    for i, color in enumerate(unique_colors):
+        cluster_idx = cluster_labels[i] - 1  # Convert to 0-based
+        color_to_cluster[tuple(color)] = cluster_idx
+    
+    # Create indices for all pixels
+    indices_flat = [color_to_cluster[tuple(pixel)] for pixel in pixels]
+    
+    return palette, indices_flat, actual_clusters
+
+
+def cluster_large_dataset(unique_colors, counts, target_clusters, pixels):
+    """
+    Cluster large datasets (>2000 colors) using optimized methods.
+    """
+    # Cap target_clusters to sample size
+    max_sample_size = 2000
+    if target_clusters > max_sample_size:
+        print(f"  Adjusting target clusters from {target_clusters} to {max_sample_size} "
+              f"(max sample size)")
+        target_clusters = max_sample_size
+    
+    # Ensure target_clusters is less than unique_count
+    target_clusters = min(target_clusters, len(unique_colors) - 1)
+    if target_clusters < 2:
+        target_clusters = 2
+    
+    # Sample weighted by frequency
+    sample_size = min(max_sample_size, len(unique_colors))
+    
+    # If we have more unique colors than sample size, we need to sample
+    if len(unique_colors) > sample_size:
+        print(f"  Sampling {sample_size:,} colors from {len(unique_colors):,} unique colors")
+        
+        probs = counts / counts.sum()
+        sample_indices = np.random.choice(
+            len(unique_colors), 
+            size=sample_size, 
+            replace=False, 
+            p=probs
+        )
+        
+        sample_colors = unique_colors[sample_indices]
+        sample_counts = counts[sample_indices]
+    else:
+        # Use all colors
+        sample_colors = unique_colors
+        sample_counts = counts
+        sample_size = len(unique_colors)
+    
+    # Apply K-means to samples
+    from sklearn.cluster import MiniBatchKMeans
+    
+    # Weight samples by frequency
+    sample_weights = sample_counts / sample_counts.max()
+    weighted_samples = sample_colors.astype(float)
+    
+    # Adjust target_clusters if needed
+    if target_clusters > sample_size:
+        target_clusters = max(2, sample_size // 2)
+        print(f"  Adjusted target clusters to {target_clusters} (sample size: {sample_size})")
+    
+    # Ensure we have enough samples for clustering
+    if target_clusters >= sample_size:
+        # Use all colors as palette (no clustering)
+        print(f"  Using all {sample_size} sampled colors as palette")
+        palette = sample_colors
+        actual_clusters = len(palette)
+        
+        # Create color mapping
+        color_to_idx = {tuple(color): i for i, color in enumerate(sample_colors)}
+        
+        # For colors not in sample, find nearest
+        indices_flat = []
+        for pixel in pixels:
+            pixel_tuple = tuple(pixel)
+            if pixel_tuple in color_to_idx:
+                indices_flat.append(color_to_idx[pixel_tuple])
+            else:
+                # Find nearest color
+                distances = np.sqrt(np.sum((sample_colors - pixel) ** 2, axis=1))
+                nearest_idx = np.argmin(distances)
+                indices_flat.append(nearest_idx)
+    else:
+        # Perform K-means clustering
+        print(f"  Applying K-means to {sample_size} samples → {target_clusters} clusters")
+        
+        kmeans = MiniBatchKMeans(
+            n_clusters=target_clusters, 
+            random_state=42, 
+            n_init=3,
+            batch_size=256
+        )
+        
+        kmeans.fit(weighted_samples, sample_weight=sample_weights)
+        
+        # Get palette from K-means
+        palette = kmeans.cluster_centers_.astype(np.uint8)
+        actual_clusters = len(palette)
+        
+        # Map all colors to nearest palette color
+        print(f"  Mapping {len(unique_colors):,} colors to {actual_clusters} palette colors")
+        
+        # Process in batches to avoid memory issues
+        batch_size = 10000
+        indices_flat = []
+        
+        for i in range(0, len(pixels), batch_size):
+            batch = pixels[i:i+batch_size]
+            
+            # Vectorized distance calculation
+            # Reshape for broadcasting: (batch_size, 1, 3) - (1, palette_size, 3)
+            batch_expanded = batch[:, np.newaxis, :]  # (batch_size, 1, 3)
+            palette_expanded = palette[np.newaxis, :, :]  # (1, palette_size, 3)
+            
+            distances = np.sqrt(np.sum((batch_expanded - palette_expanded) ** 2, axis=2))
+            nearest_indices = np.argmin(distances, axis=1)
+            
+            indices_flat.extend(nearest_indices.tolist())
+    
+    return palette, indices_flat, actual_clusters
 
 
 def adaptive_hierarchical_quantization(region_image, top_left_coords):
@@ -1731,22 +1812,32 @@ def decompress_color_quantization(compressed_data):
     """
     Decompress region compressed with color quantization.
     """
-    method = compressed_data.get('method', '')
-    if method != 'color_quantization':
-        print(f"Warning: Expected 'color_quantization' but got '{method}'")
-    
     # Extract essential data
     top_left = compressed_data['top_left']
     h, w = compressed_data['shape']
     palette = np.array(compressed_data['palette'], dtype=np.uint8)
     indices = compressed_data['indices']
     
+    # Determine the correct data type based on palette size
+    # If palette has more than 256 colors, we need uint16
+    if len(palette) > 256:
+        # Use uint16 for large palettes
+        dtype = np.uint16
+    else:
+        # Use uint8 for small palettes
+        dtype = np.uint8
+    
     # Handle different index formats
     if isinstance(indices, list):
-        # Flat list of indices
-        index_array = np.array(indices, dtype=np.uint8).reshape(h, w)
+        # Flat list of indices - use the determined dtype
+        try:
+            index_array = np.array(indices, dtype=dtype).reshape(h, w)
+        except OverflowError:
+            # Fallback to uint16 if uint8 fails (just in case)
+            print(f"Warning: Overflow with {dtype}, falling back to uint16")
+            index_array = np.array(indices, dtype=np.uint16).reshape(h, w)
     else:
-        # Already an array (shouldn't happen with current implementation)
+        # Already an array
         index_array = indices
     
     # Reconstruct image
@@ -2494,133 +2585,6 @@ def fast_border_smoothing_simple(region_components, roi_bbox):
 
 
 
-def merge_region_components_simple(region_components, roi_bbox):
-    """
-    Merge region components by placing them on ROI canvas.
-    Colored pixels override black pixels, but colored pixels don't override other colored pixels.
-    
-    Args:
-        region_components: List of compressed segments from same ROI
-        roi_bbox: (minr, minc, maxr, maxc) of ROI in original image
-    
-    Returns:
-        List of merged segments (ideally 1 segment)
-    """
-    if not region_components:
-        return []
-    
-    if len(region_components) == 1:
-        return region_components
-    
-    print(f"\n{'='*60}")
-    print(f"MERGING {len(region_components)} REGION COMPONENTS")
-    print(f"{'='*60}")
-    
-    minr, minc, maxr, maxc = roi_bbox
-    roi_height = maxr - minr
-    roi_width = maxc - minc
-    
-    # ==============================================
-    # 1. CREATE EMPTY CANVAS FOR ROI
-    # ==============================================
-    # We need to track:
-    # - The color index at each pixel (initialized to 1 = black)
-    # - The segment that "owns" each pixel (for conflict resolution)
-    roi_indices = np.ones((roi_height, roi_width), dtype=np.uint16)
-    
-    # Collect all colors from all segments
-    all_colors = []
-    color_to_index = {}
-    
-    # Ensure black is at index 1
-    black_color = (0, 0, 0)
-    if black_color not in all_colors:
-        all_colors.append(black_color)
-        color_to_index[black_color] = 1
-    
-    # ==============================================
-    # 2. PLACE SEGMENTS IN REVERSE ORDER
-    # (later segments override earlier ones)
-    # ==============================================
-    print(f"ROI canvas: {roi_height}x{roi_width} pixels")
-    print(f"Placing {len(region_components)} segments...")
-    
-    # Process segments in order (first has lowest priority, last has highest)
-    for seg_idx, seg in enumerate(region_components):
-        # Get segment data
-        seg_top_left = seg['top_left']  # Absolute coordinates
-        seg_shape = seg['shape']
-        seg_palette = seg['palette']
-        seg_indices = np.array(seg['indices']).reshape(seg_shape)
-        
-        # Calculate position relative to ROI
-        rel_row = seg_top_left[0] - minr
-        rel_col = seg_top_left[1] - minc
-        
-        # Count colored pixels in this segment
-        colored_pixels = 0
-        placed_pixels = 0
-        
-        # Place segment on ROI canvas
-        for r in range(seg_shape[0]):
-            for c in range(seg_shape[1]):
-                roi_r = rel_row + r
-                roi_c = rel_col + c
-                
-                # Check bounds
-                if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
-                    seg_pixel_idx = seg_indices[r, c]
-                    
-                    if seg_pixel_idx != 1:  # This is a colored pixel
-                        colored_pixels += 1
-                        
-                        # Get the actual color
-                        color = tuple(seg_palette[seg_pixel_idx])
-                        
-                        # Check if current pixel in ROI is black (index 1)
-                        if roi_indices[roi_r, roi_c] == 1:
-                            # Black pixel -> we can place our colored pixel
-                            
-                            # Map color to combined palette
-                            if color not in color_to_index:
-                                color_to_index[color] = len(all_colors)
-                                all_colors.append(color)
-                            
-                            # Place the color index
-                            roi_indices[roi_r, roi_c] = color_to_index[color]
-                            placed_pixels += 1
-                        # If pixel is already colored, we don't overwrite it
-                        # (first segment to claim a pixel keeps it)
-        
-        print(f"  Segment {seg_idx+1}: {colored_pixels} colored pixels, {placed_pixels} placed")
-    
-    # ==============================================
-    # 3. CREATE MERGED SEGMENT
-    # ==============================================
-    # Count statistics
-    black_pixels = np.sum(roi_indices == 1)
-    colored_pixels_total = roi_height * roi_width - black_pixels
-    
-    print(f"\nMerging complete:")
-    print(f"  ROI size: {roi_height}x{roi_width} = {roi_height*roi_width:,} pixels")
-    print(f"  Black pixels: {black_pixels:,} ({black_pixels/(roi_height*roi_width)*100:.1f}%)")
-    print(f"  Colored pixels: {colored_pixels_total:,}")
-    print(f"  Unique colors: {len(all_colors)}")
-    
-    # Create the merged segment
-    merged_segment = {
-        'top_left': (minr, minc),  # ROI's top-left in original image
-        'shape': (roi_height, roi_width),
-        'palette': all_colors,
-        'indices': roi_indices.flatten().tolist(),
-        'method': 'color_quantization',
-        'max_colors': len(all_colors),
-        'actual_colors': len(all_colors),
-        'compression_ratio': 0,  # Will calculate later
-        'encoding': 'roi_merged'
-    }
-    
-    return [merged_segment]  # Return as list with single merged segment
 
 
 def merge_region_components_better(region_components, roi_bbox):
@@ -2902,13 +2866,141 @@ def visualize_roi_components(overlap_canvas, component_count):
     except ImportError:
         print("Matplotlib not available for visualization")
 
-def visualize_merged_result(merged_segments, roi_shape, offset_r, offset_c):
+def merge_region_components_simple(region_components, roi_bbox):
     """
-    Visualize the merged result for a ROI.
+    Merge region components by placing them on ROI canvas.
+    Colored pixels override black pixels.
+    
+    Args:
+        region_components: List of compressed segments from same ROI
+        roi_bbox: (minr, minc, maxr, maxc) of ROI in original image
+    
+    Returns:
+        List of merged segments (ideally 1 segment)
+    """
+    if not region_components:
+        return []
+    
+    if len(region_components) == 1:
+        return region_components
+    
+    print(f"\n{'='*60}")
+    print(f"MERGING {len(region_components)} REGION COMPONENTS")
+    print(f"{'='*60}")
+    
+    minr, minc, maxr, maxc = roi_bbox
+    roi_height = maxr - minr
+    roi_width = maxc - minc
+    
+    # ==============================================
+    # 1. CREATE EMPTY CANVAS FOR ROI
+    # ==============================================
+    # Start with all pixels as black (index 0)
+    roi_indices = np.zeros((roi_height, roi_width), dtype=np.uint16)
+    
+    # Collect all colors from all segments
+    all_colors = []
+    color_to_index = {}
+    
+    # ALWAYS add black as the first color (index 0)
+    black_color = (0, 0, 0)
+    all_colors.append(black_color)
+    color_to_index[black_color] = 0
+    
+    print(f"ROI canvas: {roi_height}x{roi_width} pixels")
+    print(f"Placing {len(region_components)} segments...")
+    
+    # ==============================================
+    # 2. PLACE ALL SEGMENTS (last segment wins)
+    # ==============================================
+    # Process in reverse so last segments have priority
+    for seg_idx, seg in enumerate(reversed(region_components)):
+        seg_top_left = seg['top_left']  # Absolute coordinates
+        seg_shape = seg['shape']
+        seg_palette = seg['palette']  # List of [R, G, B] colors
+        seg_indices = np.array(seg['indices']).reshape(seg_shape)
+        
+        # Calculate position relative to ROI
+        rel_row = seg_top_left[0] - minr
+        rel_col = seg_top_left[1] - minc
+        
+        colored_placed = 0
+        
+        # Place segment on ROI canvas
+        for r in range(seg_shape[0]):
+            for c in range(seg_shape[1]):
+                roi_r = rel_row + r
+                roi_c = rel_col + c
+                
+                # Check bounds
+                if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
+                    seg_pixel_idx = seg_indices[r, c]
+                    
+                    # Get the actual color from segment's palette
+                    if seg_pixel_idx < len(seg_palette):
+                        color_tuple = tuple(seg_palette[seg_pixel_idx])
+                        
+                        # Check if this pixel is black
+                        is_black = (color_tuple == black_color)
+                        
+                        if not is_black:
+                            # This is a colored pixel
+                            
+                            # Map color to combined palette
+                            if color_tuple not in color_to_index:
+                                color_to_index[color_tuple] = len(all_colors)
+                                all_colors.append(color_tuple)
+                            
+                            # Always place colored pixel (overwrites whatever was there)
+                            roi_indices[roi_r, roi_c] = color_to_index[color_tuple]
+                            colored_placed += 1
+        
+        print(f"  Segment {len(region_components)-seg_idx}: {colored_placed} colored pixels placed")
+    
+    # ==============================================
+    # 3. CREATE MERGED SEGMENT
+    # ==============================================
+    # Count statistics
+    black_pixels = np.sum(roi_indices == 0)  # Index 0 is black
+    colored_pixels_total = roi_height * roi_width - black_pixels
+    
+    print(f"\nMerging complete:")
+    print(f"  ROI size: {roi_height}x{roi_width} = {roi_height*roi_width:,} pixels")
+    print(f"  Black pixels: {black_pixels:,} ({black_pixels/(roi_height*roi_width)*100:.1f}%)")
+    print(f"  Colored pixels: {colored_pixels_total:,}")
+    print(f"  Unique colors: {len(all_colors)}")
+    
+    # Create the merged segment
+    merged_segment = {
+        'top_left': (minr, minc),
+        'shape': (roi_height, roi_width),
+        'palette': all_colors,
+        'indices': roi_indices.flatten().tolist(),
+        'method': 'merged',
+        'actual_colors': len(all_colors),
+        'encoding': 'roi_merged'
+    }
+    
+    return [merged_segment]
+
+
+def visualize_merged_result(merged_segments, roi_shape, offset_r, offset_c, original_components=None):
+    """
+    Visualize the merged result for a ROI with side-by-side comparison.
+    
+    Args:
+        merged_segments: List of merged segments (usually 1)
+        roi_shape: (height, width) of the ROI
+        offset_r, offset_c: ROI offset in original image
+        original_components: Original components for comparison (optional)
     """
     import matplotlib.pyplot as plt
     
     h, w = roi_shape
+    
+    # ==============================================
+    # 1. CREATE MERGED CANVAS
+    # ==============================================
     merged_canvas = np.zeros((h, w, 3), dtype=np.uint8)
     
     for seg in merged_segments:
@@ -2921,6 +3013,7 @@ def visualize_merged_result(merged_segments, roi_shape, offset_r, offset_c):
         rel_r = top_left[0] - offset_r
         rel_c = top_left[1] - offset_c
         
+        # Create RGB image from indices
         for r in range(shape[0]):
             for c in range(shape[1]):
                 canvas_r = rel_r + r
@@ -2932,11 +3025,211 @@ def visualize_merged_result(merged_segments, roi_shape, offset_r, offset_c):
                         color = palette[idx]
                         merged_canvas[canvas_r, canvas_c] = color
     
-    plt.figure(figsize=(10, 5))
-    plt.imshow(merged_canvas)
-    plt.title(f'Merged ROI Result: {len(merged_segments)} segments')
-    plt.axis('off')
+    # ==============================================
+    # 2. CREATE BLACK MASK
+    # ==============================================
+    black_mask = np.all(merged_canvas == [0, 0, 0], axis=2)
+    colored_mask = ~black_mask
+    
+    # Create colored-only image (black pixels become transparent in visualization)
+    colored_only = merged_canvas.copy()
+    
+    # ==============================================
+    # 3. CREATE ORIGINAL COMPONENTS CANVAS (if provided)
+    # ==============================================
+    if original_components:
+        original_canvas = np.zeros((h, w, 3), dtype=np.uint8)
+        
+        for seg in original_components:
+            top_left = seg['top_left']
+            shape = seg['shape']
+            indices = np.array(seg['indices']).reshape(shape)
+            palette = seg['palette']
+            
+            rel_r = top_left[0] - offset_r
+            rel_c = top_left[1] - offset_c
+            
+            for r in range(shape[0]):
+                for c in range(shape[1]):
+                    canvas_r = rel_r + r
+                    canvas_c = rel_c + c
+                    
+                    if 0 <= canvas_r < h and 0 <= canvas_c < w:
+                        idx = indices[r, c]
+                        if idx < len(palette):
+                            color = palette[idx]
+                            original_canvas[canvas_r, canvas_c] = color
+    
+    # ==============================================
+    # 4. CREATE VISUALIZATION
+    # ==============================================
+    if original_components:
+        # Show 4 subplots: original, merged, colored only, black mask
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        
+        # Original components
+        axes[0, 0].imshow(original_canvas)
+        axes[0, 0].set_title(f'Original: {len(original_components)} segments')
+        axes[0, 0].axis('off')
+        
+        # Merged result
+        axes[0, 1].imshow(merged_canvas)
+        axes[0, 1].set_title(f'Merged: {len(merged_segments)} segment(s)')
+        axes[0, 1].axis('off')
+        
+        # Colored pixels only (black as white for visibility)
+        colored_display = colored_only.copy()
+        colored_display[black_mask] = [255, 255, 255]  # White background
+        axes[0, 2].imshow(colored_display)
+        axes[0, 2].set_title(f'Colored pixels: {np.sum(colored_mask):,}')
+        axes[0, 2].axis('off')
+        
+        # Black pixel mask
+        axes[1, 0].imshow(black_mask, cmap='gray')
+        axes[1, 0].set_title(f'Black pixels: {np.sum(black_mask):,} ({np.sum(black_mask)/(h*w)*100:.1f}%)')
+        axes[1, 0].axis('off')
+        
+        # Color distribution
+        if np.sum(colored_mask) > 0:
+            # Get all colored pixels
+            colored_pixels = merged_canvas[colored_mask].reshape(-1, 3)
+            
+            # Create histogram of color intensities
+            intensities = np.mean(colored_pixels, axis=1)
+            axes[1, 1].hist(intensities, bins=50, color='skyblue', edgecolor='black')
+            axes[1, 1].set_title('Color intensity distribution')
+            axes[1, 1].set_xlabel('Intensity (0-255)')
+            axes[1, 1].set_ylabel('Count')
+        else:
+            axes[1, 1].text(0.5, 0.5, 'No colored pixels', 
+                          ha='center', va='center', transform=axes[1, 1].transAxes)
+            axes[1, 1].axis('off')
+        
+        # Stats text
+        stats_text = f"""
+        ROI Size: {h}x{w} = {h*w:,} pixels
+        Colored: {np.sum(colored_mask):,} ({np.sum(colored_mask)/(h*w)*100:.1f}%)
+        Black: {np.sum(black_mask):,} ({np.sum(black_mask)/(h*w)*100:.1f}%)
+        Colors: {len(merged_segments[0]['palette']) if merged_segments else 0}
+        """
+        axes[1, 2].text(0.1, 0.5, stats_text, fontsize=10, 
+                       verticalalignment='center', transform=axes[1, 2].transAxes)
+        axes[1, 2].axis('off')
+        
+    else:
+        # Show 2x2 grid for merged only
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        
+        # Merged result
+        axes[0, 0].imshow(merged_canvas)
+        axes[0, 0].set_title(f'Merged ROI ({len(merged_segments)} segment(s))')
+        axes[0, 0].axis('off')
+        
+        # Colored pixels only
+        colored_display = colored_only.copy()
+        colored_display[black_mask] = [255, 255, 255]  # White background
+        axes[0, 1].imshow(colored_display)
+        axes[0, 1].set_title(f'Colored pixels only ({np.sum(colored_mask):,})')
+        axes[0, 1].axis('off')
+        
+        # Black pixel mask
+        axes[1, 0].imshow(black_mask, cmap='gray')
+        axes[1, 0].set_title(f'Black pixels: {np.sum(black_mask):,} ({np.sum(black_mask)/(h*w)*100:.1f}%)')
+        axes[1, 0].axis('off')
+        
+        # Color preview (first few colors in palette)
+        if merged_segments and len(merged_segments[0]['palette']) > 1:
+            palette = merged_segments[0]['palette']
+            # Skip black (first color)
+            colors_to_show = min(10, len(palette) - 1)
+            
+            # Create color swatches
+            swatch_height = 1
+            swatch_width = colors_to_show
+            
+            color_swatches = np.zeros((swatch_height, swatch_width, 3), dtype=np.uint8)
+            for i in range(colors_to_show):
+                color_swatches[0, i] = palette[i + 1]  # Skip black
+            
+            axes[1, 1].imshow(color_swatches)
+            axes[1, 1].set_title(f'Top {colors_to_show} colors (excl. black)')
+            axes[1, 1].axis('off')
+        else:
+            axes[1, 1].text(0.5, 0.5, 'No colors to display', 
+                          ha='center', va='center', transform=axes[1, 1].transAxes)
+            axes[1, 1].axis('off')
+    
+    plt.tight_layout()
     plt.show()
+    
+    # Print detailed stats
+    print(f"\n{'='*60}")
+    print(f"VISUALIZATION STATISTICS")
+    print(f"{'='*60}")
+    print(f"ROI Size: {h}x{w} = {h*w:,} pixels")
+    print(f"Colored pixels: {np.sum(colored_mask):,} ({np.sum(colored_mask)/(h*w)*100:.1f}%)")
+    print(f"Black pixels: {np.sum(black_mask):,} ({np.sum(black_mask)/(h*w)*100:.1f}%)")
+    
+    if merged_segments:
+        seg = merged_segments[0]
+        print(f"Segment shape: {seg['shape']}")
+        print(f"Palette size: {len(seg['palette'])} colors")
+        print(f"Top-left position: {seg['top_left']}")
+        
+        # Count how many unique colors actually appear
+        indices = np.array(seg['indices'])
+        unique_indices = set(indices)
+        print(f"Unique color indices used: {len(unique_indices)}")
+        
+        # Show color frequencies
+        if len(seg['palette']) <= 20:  # Only if palette is small
+            print("\nColor frequencies:")
+            for idx in sorted(unique_indices):
+                count = np.sum(indices == idx)
+                color = seg['palette'][idx]
+                if tuple(color) == (0, 0, 0):
+                    color_name = "BLACK"
+                else:
+                    color_name = f"RGB{tuple(color)}"
+                print(f"  Index {idx}: {color_name} - {count:,} pixels ({count/len(indices)*100:.1f}%)")
+    
+    return merged_canvas
+
+
+
+def debug_merge_components(region_components, roi_bbox):
+    """
+    Debug version with extra information.
+    """
+    if not region_components:
+        return []
+    
+    print(f"\n{'='*60}")
+    print(f"DEBUG MERGING {len(region_components)} COMPONENTS")
+    print(f"{'='*60}")
+    
+    # First, print info about each component
+    for i, seg in enumerate(region_components):
+        print(f"\nSegment {i}:")
+        print(f"  Top-left: {seg['top_left']}")
+        print(f"  Shape: {seg['shape']}")
+        print(f"  Palette size: {len(seg['palette'])}")
+        
+        # Count black pixels in this segment
+        indices = np.array(seg['indices'])
+        palette = seg['palette']
+        
+        black_count = 0
+        for idx in indices:
+            if idx < len(palette):
+                color = tuple(palette[idx])
+                if color == (0, 0, 0):
+                    black_count += 1
+        
+        print(f"  Black pixels: {black_count}/{len(indices)} ({black_count/len(indices)*100:.1f}%)")
+    
+    # Now do the merge
+    return merge_region_components_simple(region_components, roi_bbox)
 
 
 
@@ -2950,6 +3243,596 @@ def visualize_merged_result(merged_segments, roi_shape, offset_r, offset_c):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def get_all_unique_colors(region_image, top_left_coords):
+    """
+    Get ALL unique colors from the region without any clustering.
+    Returns the same data structure as compression functions.
+    """
+    if region_image is None or region_image.size == 0:
+        return None
+    
+    h, w, _ = region_image.shape
+    total_pixels = h * w
+    
+    print(f"Getting all unique colors: {h}x{w} region")
+    print(f"Top-left: {top_left_coords}")
+    
+    # ==============================================
+    # 1. GET ALL UNIQUE COLORS
+    # ==============================================
+    pixels = region_image.reshape(-1, 3)
+    unique_colors, counts = np.unique(pixels, axis=0, return_counts=True)
+    unique_count = len(unique_colors)
+    
+    print(f"  Found {unique_count:,} unique colors")
+    
+    # ==============================================
+    # 2. CREATE COLOR TO INDEX MAPPING
+    # ==============================================
+    # Create a dictionary mapping each color to its index
+    color_to_index = {}
+    palette = []
+    
+    for i, color in enumerate(unique_colors):
+        color_tuple = tuple(color)
+        color_to_index[color_tuple] = i
+        palette.append(color.tolist())  # Convert to list for JSON serialization
+    
+    print(f"  Created palette with {len(palette)} colors")
+    
+    # ==============================================
+    # 3. CREATE INDICES FOR EACH PIXEL
+    # ==============================================
+    # Map each pixel to its color index
+    indices_flat = []
+    for pixel in pixels:
+        color_tuple = tuple(pixel)
+        indices_flat.append(color_to_index[color_tuple])
+    
+    # ==============================================
+    # 4. CALCULATE BASIC STATISTICS
+    # ==============================================
+    actual_colors = len(palette)
+    original_size = total_pixels * 3
+    
+    # Determine index data type
+    if actual_colors <= 256:
+        index_dtype = np.uint8
+        bytes_per_index = 1
+    else:
+        index_dtype = np.uint16
+        bytes_per_index = 2
+    
+    # Calculate compressed size
+    palette_size = actual_colors * 3
+    indices_size = total_pixels * bytes_per_index
+    metadata_size = 50  # Approximate metadata size
+    
+    compressed_size = palette_size + indices_size + metadata_size
+    
+    # Calculate compression ratio
+    compression_ratio = original_size / compressed_size if compressed_size > 0 else 0
+    
+    # PSNR is perfect since we're using all original colors
+    psnr = float('inf')
+    
+    # ==============================================
+    # 5. CREATE OUTPUT DATA STRUCTURE
+    # ==============================================
+    compressed_data = {
+        'method': 'exact_colors',
+        'top_left': top_left_coords,
+        'shape': (h, w),
+        'palette': palette,  # All unique colors
+        'indices': indices_flat,
+        'max_colors': actual_colors,
+        'actual_colors': actual_colors,
+        'index_dtype': str(index_dtype),
+        'original_size': original_size,
+        'compressed_size': compressed_size,
+        'compression_ratio': compression_ratio,
+        'mse': 0.0,  # Perfect reconstruction
+        'psnr': psnr,
+        'encoding': 'exact'  # Mark as exact color representation
+    }
+    
+    print(f"  Palette size: {actual_colors} colors")
+    print(f"  Original: {original_size:,} bytes")
+    print(f"  Compressed: {compressed_size:,} bytes")
+    print(f"  Ratio: {compression_ratio:.2f}:1")
+    print(f"  PSNR: Perfect (exact colors)")
+    
+    return compressed_data
+
+
+def get_all_colors_fast(region_image, top_left_coords):
+    """
+    Faster version using numpy operations.
+    Returns all unique colors without compression.
+    """
+    if region_image is None or region_image.size == 0:
+        return None
+    
+    h, w, _ = region_image.shape
+    total_pixels = h * w
+    
+    print(f"Fast exact colors: {h}x{w} region")
+    
+    # Reshape to pixel array
+    pixels = region_image.reshape(-1, 3)
+    
+    # Get unique colors and their indices
+    unique_colors, inverse_indices = np.unique(pixels, axis=0, return_inverse=True)
+    unique_count = len(unique_colors)
+    
+    print(f"  Unique colors: {unique_count:,}")
+    
+    # Convert palette to list format
+    palette = unique_colors.tolist()
+    
+    # Indices are already in inverse_indices
+    indices_flat = inverse_indices.tolist()
+    
+    # Calculate stats
+    actual_colors = unique_count
+    original_size = total_pixels * 3
+    
+    # Data type for indices
+    if actual_colors <= 256:
+        index_dtype = np.uint8
+        bytes_per_index = 1
+    else:
+        index_dtype = np.uint16
+        bytes_per_index = 2
+    
+    compressed_size = actual_colors * 3 + total_pixels * bytes_per_index + 50
+    
+    # Create result
+    result = {
+        'method': 'exact_colors_fast',
+        'top_left': top_left_coords,
+        'shape': (h, w),
+        'palette': palette,
+        'indices': indices_flat,
+        'actual_colors': actual_colors,
+        'original_size': original_size,
+        'compressed_size': compressed_size,
+        'compression_ratio': original_size / compressed_size,
+        'psnr': float('inf'),
+        'mse': 0.0,
+        'encoding': 'exact_fast'
+    }
+    
+    print(f"  Compression: {original_size:,} → {compressed_size:,} bytes")
+    
+    return result
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+from sklearn.cluster import DBSCAN
+import numpy as np
+
+def cluster_palette_colors(compressed_data, eps=10.0, min_samples=2, max_colors_per_cluster=5):
+    """
+    Cluster similar colors in palette using DBSCAN.
+    Colors within 'eps' distance are clustered together.
+    Each cluster is replaced with its average color.
+    
+    SPECIAL RULE: Black [0, 0, 0] is NEVER clustered - always kept as is.
+    """
+    print(f"\n{'='*60}")
+    print(f"CLUSTERING PALETTE COLORS (Black preserved)")
+    print(f"{'='*60}")
+    
+    # Extract original data
+    palette = np.array(compressed_data['palette'], dtype=np.uint8)
+    indices = np.array(compressed_data['indices'])
+    h, w = compressed_data['shape']
+    top_left = compressed_data['top_left']
+    
+    original_colors = len(palette)
+    print(f"Original palette: {original_colors} colors")
+    print(f"Clustering parameters: eps={eps}, min_samples={min_samples}")
+    
+    # ==============================================
+    # 1. SEPARATE BLACK FROM OTHER COLORS
+    # ==============================================
+    # Find which indices correspond to black [0, 0, 0]
+    black_indices = []
+    non_black_indices = []
+    
+    for i, color in enumerate(palette):
+        if np.array_equal(color, [0, 0, 0]):
+            black_indices.append(i)
+        else:
+            non_black_indices.append(i)
+    
+    print(f"  Black colors found: {len(black_indices)}")
+    print(f"  Non-black colors: {len(non_black_indices)}")
+    
+    if len(non_black_indices) == 0:
+        print("  Only black colors - nothing to cluster!")
+        return compressed_data
+    
+    # ==============================================
+    # 2. CLUSTER ONLY NON-BLACK COLORS
+    # ==============================================
+    non_black_palette = palette[non_black_indices]
+    
+    # Normalize colors to 0-1 for better distance calculation
+    palette_normalized = non_black_palette.astype(float) / 255.0
+    
+    # Apply DBSCAN (only to non-black colors)
+    dbscan = DBSCAN(eps=eps/255.0, min_samples=min_samples, metric='euclidean')
+    cluster_labels = dbscan.fit_predict(palette_normalized)
+    
+    # Count clusters (-1 means noise/outlier colors)
+    n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+    n_noise = np.sum(cluster_labels == -1)
+    
+    print(f"DBSCAN found {n_clusters} clusters + {n_noise} noise colors (excluding black)")
+    
+    # ==============================================
+    # 3. CREATE NEW PALETTE (INCLUDING BLACK)
+    # ==============================================
+    new_palette = []
+    color_mapping = {}  # Old index → new index
+    
+    # FIRST: Add all black colors exactly as they are
+    for old_black_idx in black_indices:
+        new_palette.append(palette[old_black_idx])
+        color_mapping[old_black_idx] = len(new_palette) - 1
+    
+    # SECOND: Process non-black clusters
+    unique_labels = set(cluster_labels)
+    
+    for label in unique_labels:
+        if label == -1:
+            # Noise points - keep them as individual colors
+            noise_mask = cluster_labels == -1
+            noise_relative_indices = np.where(noise_mask)[0]
+            
+            for rel_idx in noise_relative_indices:
+                # Convert relative index back to original palette index
+                old_idx = non_black_indices[rel_idx]
+                new_palette.append(palette[old_idx])
+                color_mapping[old_idx] = len(new_palette) - 1
+        else:
+            # Regular cluster
+            cluster_mask = cluster_labels == label
+            cluster_relative_indices = np.where(cluster_mask)[0]
+            
+            # Convert relative indices to original palette indices
+            cluster_original_indices = [non_black_indices[idx] for idx in cluster_relative_indices]
+            
+            if len(cluster_original_indices) > max_colors_per_cluster:
+                print(f"  Cluster {label} has {len(cluster_original_indices)} colors > {max_colors_per_cluster}, splitting...")
+                
+                # Get the actual colors for this cluster
+                cluster_colors = palette[cluster_original_indices]
+                
+                # Split large cluster
+                split_clusters = split_large_cluster(cluster_colors, int(max_colors_per_cluster))
+                
+                for split_cluster in split_clusters:
+                    avg_color = np.mean(split_cluster, axis=0).astype(np.uint8)
+                    new_palette.append(avg_color)
+                    
+                    # Map all colors in this split to the same new index
+                    for color in split_cluster:
+                        # Find original index for this color
+                        old_idx = find_color_index(palette, color)
+                        if old_idx is not None:
+                            color_mapping[old_idx] = len(new_palette) - 1
+            else:
+                # Average colors in cluster
+                cluster_colors = palette[cluster_original_indices]
+                avg_color = np.mean(cluster_colors, axis=0).astype(np.uint8)
+                new_palette.append(avg_color)
+                
+                # Map all colors in cluster to the same new index
+                for old_idx in cluster_original_indices:
+                    color_mapping[old_idx] = len(new_palette) - 1
+    
+    new_palette = np.array(new_palette)
+    new_color_count = len(new_palette)
+    
+    # Verify black is preserved
+    black_preserved = any(np.array_equal(color, [0, 0, 0]) for color in new_palette)
+    print(f"  Black preserved: {black_preserved}")
+    
+    print(f"New palette: {new_color_count} colors")
+    print(f"Color reduction: {original_colors} → {new_color_count} "
+          f"({(original_colors - new_color_count)/original_colors*100:.1f}%)")
+    
+    # ==============================================
+    # 4. UPDATE INDICES WITH NEW COLOR MAPPING
+    # ==============================================
+    # Create a mapping array for fast lookup
+    mapping_array = np.zeros(original_colors, dtype=np.uint16)
+    for old_idx, new_idx in color_mapping.items():
+        mapping_array[old_idx] = new_idx
+    
+    # Update indices
+    new_indices = mapping_array[indices].tolist()
+    
+    # ==============================================
+    # 5. CALCULATE STATISTICS
+    # ==============================================
+    total_pixels = h * w
+    original_size = compressed_data.get('original_size', total_pixels * 3)
+    
+    # Calculate new compressed size
+    if new_color_count <= 256:
+        bytes_per_index = 1
+        index_dtype = 'uint8'
+    else:
+        bytes_per_index = 2
+        index_dtype = 'uint16'
+    
+    new_palette_size = new_color_count * 3
+    new_indices_size = total_pixels * bytes_per_index
+    metadata_size = 100  # Approximate
+    
+    new_compressed_size = new_palette_size + new_indices_size + metadata_size
+    compression_ratio = original_size / new_compressed_size if new_compressed_size > 0 else 0
+    
+    # Estimate PSNR
+    mse = estimate_clustering_mse(palette, new_palette, color_mapping, indices, h, w)
+    psnr = 10 * np.log10(255*255/mse) if mse > 0 else float('inf')
+    
+    # ==============================================
+    # 6. CREATE NEW COMPRESSED DATA
+    # ==============================================
+    new_compressed_data = {
+        'method': 'clustered_colors',
+        'top_left': top_left,
+        'shape': (h, w),
+        'palette': new_palette.tolist(),
+        'indices': new_indices,
+        'original_unique_colors': original_colors,
+        'compressed_colors': new_color_count,
+        'index_dtype': index_dtype,
+        'original_size': original_size,
+        'compressed_size': new_compressed_size,
+        'compression_ratio': compression_ratio,
+        'mse': float(mse),
+        'psnr': float(psnr),
+        'clustering_params': {
+            'eps': eps,
+            'min_samples': min_samples,
+            'max_colors_per_cluster': max_colors_per_cluster
+        },
+        'encoding': 'dbscan_clustered',
+        'black_preserved': True  # Flag to indicate black was preserved
+    }
+    
+    print(f"\nClustering complete:")
+    print(f"  Colors: {original_colors} → {new_color_count}")
+    print(f"  PSNR: {psnr:.2f} dB")
+    print(f"  Compression: {original_size:,} → {new_compressed_size:,} bytes")
+    print(f"  Ratio: {compression_ratio:.2f}:1")
+    
+    return new_compressed_data
+
+def split_large_cluster(cluster_colors, max_size):
+    """
+    Split a large cluster into smaller sub-clusters.
+    Uses simple K-means to split.
+    """
+    from sklearn.cluster import KMeans
+    
+    n_splits = max(2, len(cluster_colors) // max_size + 1)
+    kmeans = KMeans(n_clusters=n_splits, random_state=42, n_init=3)
+    
+    labels = kmeans.fit_predict(cluster_colors.astype(float))
+    
+    splits = []
+    for i in range(n_splits):
+        mask = labels == i
+        if np.any(mask):
+            splits.append(cluster_colors[mask])
+    
+    return splits
+
+
+def find_color_index(palette, color):
+    """Find the index of a color in the palette."""
+    matches = np.all(palette == color, axis=1)
+    if np.any(matches):
+        return np.where(matches)[0][0]
+    return None
+
+
+def estimate_clustering_mse(orig_palette, new_palette, mapping, indices, h, w):
+    """
+    Estimate MSE from clustering.
+    Simplified calculation: average squared color distance.
+    """
+    total_error = 0
+    pixel_count = h * w
+    
+    # Calculate average error per color mapping
+    for old_idx, new_idx in mapping.items():
+        orig_color = orig_palette[old_idx].astype(float)
+        new_color = new_palette[new_idx].astype(float)
+        error = np.sum((orig_color - new_color) ** 2)
+        total_error += error
+    
+    # Average error
+    avg_error = total_error / len(mapping) if mapping else 0
+    
+    # Scale by pixel count (simplified)
+    estimated_mse = avg_error * 0.3  # Empirical scaling factor
+    
+    return max(estimated_mse, 0.1)  # Avoid zero
+
+
+def hierarchical_color_clustering(compressed_data, quality=85):
+    """
+    Alternative: Hierarchical clustering with quality control.
+    """
+    palette = np.array(compressed_data['palette'], dtype=np.uint8)
+    indices = np.array(compressed_data['indices'])
+    
+    original_colors = len(palette)
+    target_colors = max(2, int(original_colors * quality / 100))
+    
+    print(f"Hierarchical clustering: {original_colors} → {target_colors} colors")
+    
+    # Use K-means for hierarchical-like clustering
+    from sklearn.cluster import KMeans
+    
+    kmeans = KMeans(n_clusters=target_colors, random_state=42, n_init=3)
+    kmeans.fit(palette.astype(float))
+    
+    # Get new palette and mapping
+    new_palette = kmeans.cluster_centers_.astype(np.uint8)
+    new_indices = kmeans.labels_[indices].tolist()
+    
+    # Create new compressed data
+    return create_clustered_result(
+        compressed_data, new_palette, new_indices, 'hierarchical_clustered'
+    )
+
+
+def create_clustered_result(original_data, new_palette, new_indices, method_name):
+    """Helper to create clustered result structure."""
+    h, w = original_data['shape']
+    total_pixels = h * w
+    
+    new_color_count = len(new_palette)
+    
+    # Calculate sizes
+    original_size = original_data.get('original_size', total_pixels * 3)
+    
+    if new_color_count <= 256:
+        bytes_per_index = 1
+        index_dtype = 'uint8'
+    else:
+        bytes_per_index = 2
+        index_dtype = 'uint16'
+    
+    new_compressed_size = new_color_count * 3 + total_pixels * bytes_per_index + 100
+    
+    return {
+        'method': method_name,
+        'top_left': original_data['top_left'],
+        'shape': (h, w),
+        'palette': new_palette.tolist(),
+        'indices': new_indices,
+        'compressed_colors': new_color_count,
+        'index_dtype': index_dtype,
+        'original_size': original_size,
+        'compressed_size': new_compressed_size,
+        'compression_ratio': original_size / new_compressed_size,
+        'encoding': method_name
+    }
 
 
 
@@ -3175,184 +4058,212 @@ if __name__ == "__main__":
             # ==============================================
             # 2. COMPRESS CROPPED SEGMENT
             # ==============================================
-            # Replace your current compression call with:
-            # OR use adaptive version:
-            seg_compression = hierarchical_color_quantization(
+            seg_compression = get_all_unique_colors(
                 segment_image_cropped,
-                (top_left_abs_row, top_left_abs_col),
-                quality=50
+                (top_left_abs_row, top_left_abs_col)
             )
-                        
-            """
-            # ==============================================
-            # 3. RECONSTRUCT 
-            # ==============================================
-            reconstruction_result = decompress_color_quantization(
+
+            quality=10
+            n_colors = seg_compression['actual_colors']
+
+            distance= 256 - (256*quality / 100)
+            eps=math.pow(100/quality,3)
+
+            coefficient_max_samples=quality/100
+            max_sample_pre=math.pow(n_colors, coefficient_max_samples )
+            #max_colors_per_cluster=math.ceil( math.pow(math.e,max_sample_pre) * 3*100/quality  )
+            max_colors_per_cluster=math.ceil(max_sample_pre * 3*100/quality  )
+
+            # Then cluster the colors
+            seg_compression = cluster_palette_colors(
                 seg_compression,
+                eps=eps,           # Distance threshold (0-255 scale)
+                min_samples=1,      # Min colors to form cluster
+                max_colors_per_cluster=max_colors_per_cluster  # Split large clusters
             )
 
-            # ==============================================
-            # 4. VISUALIZE COMPARISON WITH STATS
-            # ==============================================
-            print(f"\n{'='*60}")
-            print(f"SEGMENT {seg_idx+1} - COLOR QUANTIZATION RESULTS")
-            print(f"{'='*60}")
+            print(f"Eps: {eps}")
+            print(f"n_colors: {n_colors}")
+            print(f"max_sample_pre: {max_sample_pre}")
+            print(f"max_colors_per_cluster: {max_colors_per_cluster}")
 
-            # Get stats from compression
-            h, w, _ = segment_image_cropped.shape
-            original_size = h * w * 3
-            compressed_size = seg_compression['compressed_size']
-            compression_ratio = seg_compression['compression_ratio']
-            psnr = seg_compression['psnr']
-            n_colors = seg_compression['compressed_colors']
+            
+                        
+            
+            show_reconstruction_result=True
+            if show_reconstruction_result:
+                # ==============================================
+                # 3. RECONSTRUCT 
+                # ==============================================
+                reconstruction_result = decompress_color_quantization(
+                    seg_compression,
+                )
 
-            # Print stats in a clean format
-            print(f"Segment {seg_idx+1} Summary:")
-            print(f"  Shape: {h}x{w}")
-            print(f"  Top-left: {top_left_abs_row, top_left_abs_col}")
-            print(f"  Colors in palette: {n_colors}")
-            print(f"  Original size: {original_size:,} bytes")
-            print(f"  Compressed size: {compressed_size:,} bytes")
-            print(f"  Compression ratio: {compression_ratio:.2f}:1")
-            print(f"  Space savings: {(1 - compressed_size/original_size)*100:.1f}%")
-            print(f"  Quality (PSNR): {psnr:.2f} dB")
-
-            # Create visualization figure
-            import matplotlib.pyplot as plt
-
-            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-
-            # Original image
-            axes[0, 0].imshow(segment_image_cropped)
-            axes[0, 0].set_title(f'Original\n{h}x{w} pixels')
-            axes[0, 0].axis('off')
-
-            # Add pixel info
-            non_black = np.sum(np.any(segment_image_cropped > 10, axis=2))
-            axes[0, 0].text(0.02, 0.98, f'Content: {non_black:,} px', 
-                        transform=axes[0, 0].transAxes, fontsize=9, color='white',
-                        verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='black', alpha=0.7))
-
-            # Reconstructed image
-            reconstructed_img = reconstruction_result['image']
-            axes[0, 1].imshow(reconstructed_img)
-            axes[0, 1].set_title(f'Reconstructed\n{n_colors} colors')
-            axes[0, 1].axis('off')
-
-            # Difference (amplified for visibility)
-            diff = np.abs(segment_image_cropped.astype(float) - reconstructed_img.astype(float))
-            diff_display = np.clip(diff * 3, 0, 255).astype(np.uint8)
-            axes[0, 2].imshow(diff_display)
-            axes[0, 2].set_title(f'Difference (×3)\nPSNR: {psnr:.2f} dB')
-            axes[0, 2].axis('off')
-
-            # Add MSE/PSNR to difference plot
-            mse = np.mean(diff ** 2)
-            axes[0, 2].text(0.02, 0.98, f'MSE: {mse:.2f}', 
-                        transform=axes[0, 2].transAxes, fontsize=9, color='white',
-                        verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='red', alpha=0.7))
-
-            # Color palette visualization
-            palette = np.array(seg_compression['palette'])
-            axes[1, 0].axis('off')
-
-            # Create palette visualization
-            if n_colors > 0:
-                # Create a color swatch
-                palette_h = max(1, min(10, n_colors // 10))
-                palette_w = (n_colors + palette_h - 1) // palette_h
                 
-                palette_img = np.zeros((palette_h * 20, palette_w * 20, 3), dtype=np.uint8)
-                
-                for idx, color in enumerate(palette):
-                    row = (idx // palette_w) * 20
-                    col = (idx % palette_w) * 20
-                    palette_img[row:row+18, col:col+18] = color
-                
-                # Display in inset axes
-                from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-                ax_inset = inset_axes(axes[1, 0], width="60%", height="60%", loc='center')
-                ax_inset.imshow(palette_img)
-                ax_inset.set_title(f'Color Palette ({n_colors} colors)')
-                ax_inset.axis('off')
-                
-                # Add palette stats
-                unique_original = len(np.unique(segment_image_cropped.reshape(-1, 3), axis=0))
-                palette_text = f'Original: {unique_original} colors\nCompressed: {n_colors} colors\nReduction: {(1 - n_colors/unique_original)*100:.1f}%'
-                axes[1, 0].text(0.5, 0.1, palette_text, transform=axes[1, 0].transAxes,
+
+                # ==============================================
+                # 4. VISUALIZE COMPARISON WITH STATS
+                # ==============================================
+                print(f"\n{'='*60}")
+                print(f"SEGMENT {seg_idx+1} - COLOR QUANTIZATION RESULTS")
+                print(f"{'='*60}")
+
+                # Get stats from compression
+                h, w, _ = segment_image_cropped.shape
+                original_size = h * w * 3
+                compressed_size = seg_compression['compressed_size']
+                compression_ratio = seg_compression['compression_ratio']
+                psnr = seg_compression['psnr']
+                n_colors = seg_compression['compressed_colors']
+
+                # Print stats in a clean format
+                print(f"Segment {seg_idx+1} Summary:")
+                print(f"  Shape: {h}x{w}")
+                print(f"  Top-left: {top_left_abs_row, top_left_abs_col}")
+                print(f"  Colors in palette: {n_colors}")
+                print(f"  Original size: {original_size:,} bytes")
+                print(f"  Compressed size: {compressed_size:,} bytes")
+                print(f"  Compression ratio: {compression_ratio:.2f}:1")
+                print(f"  Space savings: {(1 - compressed_size/original_size)*100:.1f}%")
+                print(f"  Quality (PSNR): {psnr:.2f} dB")
+
+                # Create visualization figure
+                import matplotlib.pyplot as plt
+
+                fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+
+                # Original image
+                axes[0, 0].imshow(segment_image_cropped)
+                axes[0, 0].set_title(f'Original\n{h}x{w} pixels')
+                axes[0, 0].axis('off')
+
+                # Add pixel info
+                non_black = np.sum(np.any(segment_image_cropped > 10, axis=2))
+                axes[0, 0].text(0.02, 0.98, f'Content: {non_black:,} px', 
+                            transform=axes[0, 0].transAxes, fontsize=9, color='white',
+                            verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='black', alpha=0.7))
+
+                # Reconstructed image
+                reconstructed_img = reconstruction_result['image']
+                axes[0, 1].imshow(reconstructed_img)
+                axes[0, 1].set_title(f'Reconstructed\n{n_colors} colors')
+                axes[0, 1].axis('off')
+
+                # Difference (amplified for visibility)
+                diff = np.abs(segment_image_cropped.astype(float) - reconstructed_img.astype(float))
+                diff_display = np.clip(diff * 3, 0, 255).astype(np.uint8)
+                axes[0, 2].imshow(diff_display)
+                axes[0, 2].set_title(f'Difference (×3)\nPSNR: {psnr:.2f} dB')
+                axes[0, 2].axis('off')
+
+                # Add MSE/PSNR to difference plot
+                mse = np.mean(diff ** 2)
+                axes[0, 2].text(0.02, 0.98, f'MSE: {mse:.2f}', 
+                            transform=axes[0, 2].transAxes, fontsize=9, color='white',
+                            verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='red', alpha=0.7))
+
+                # Color palette visualization
+                palette = np.array(seg_compression['palette'])
+                axes[1, 0].axis('off')
+
+                # Create palette visualization
+                if n_colors > 0:
+                    # Create a color swatch
+                    palette_h = max(1, min(10, n_colors // 10))
+                    palette_w = (n_colors + palette_h - 1) // palette_h
+                    
+                    palette_img = np.zeros((palette_h * 20, palette_w * 20, 3), dtype=np.uint8)
+                    
+                    for idx, color in enumerate(palette):
+                        row = (idx // palette_w) * 20
+                        col = (idx % palette_w) * 20
+                        palette_img[row:row+18, col:col+18] = color
+                    
+                    # Display in inset axes
+                    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+                    ax_inset = inset_axes(axes[1, 0], width="60%", height="60%", loc='center')
+                    ax_inset.imshow(palette_img)
+                    ax_inset.set_title(f'Color Palette ({n_colors} colors)')
+                    ax_inset.axis('off')
+                    
+                    # Add palette stats
+                    unique_original = len(np.unique(segment_image_cropped.reshape(-1, 3), axis=0))
+                    palette_text = f'Original: {unique_original} colors\nCompressed: {n_colors} colors\nReduction: {(1 - n_colors/unique_original)*100:.1f}%'
+                    axes[1, 0].text(0.5, 0.1, palette_text, transform=axes[1, 0].transAxes,
+                                fontsize=9, horizontalalignment='center',
+                                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
+
+                # Compression statistics visualization
+                axes[1, 1].axis('off')
+
+                # Create bar chart for size comparison
+                size_data = [original_size, compressed_size]
+                size_labels = ['Original', 'Compressed']
+                colors = ['skyblue', 'lightcoral']
+
+                # Create inset axes for bar chart
+                ax_bar = inset_axes(axes[1, 1], width="60%", height="60%", loc='center')
+                bars = ax_bar.bar(size_labels, size_data, color=colors, alpha=0.7)
+                ax_bar.set_title('Size Comparison')
+                ax_bar.set_ylabel('Bytes')
+
+                # Add value labels on bars
+                for bar in bars:
+                    height = bar.get_height()
+                    ax_bar.text(bar.get_x() + bar.get_width()/2., height + max(size_data)*0.05,
+                            f'{height:,}', ha='center', va='bottom', fontsize=9)
+
+                # Add ratio text
+                ratio_text = f'Compression Ratio: {compression_ratio:.2f}:1\nSavings: {(1 - compressed_size/original_size)*100:.1f}%'
+                axes[1, 1].text(0.5, 0.1, ratio_text, transform=axes[1, 1].transAxes,
                             fontsize=9, horizontalalignment='center',
-                            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
+                            bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7))
 
-            # Compression statistics visualization
-            axes[1, 1].axis('off')
+                # Index map visualization (shows which palette index each pixel uses)
+                axes[1, 2].axis('off')
 
-            # Create bar chart for size comparison
-            size_data = [original_size, compressed_size]
-            size_labels = ['Original', 'Compressed']
-            colors = ['skyblue', 'lightcoral']
+                # Get index map
+                index_map = np.array(seg_compression['indices']).reshape(h, w)
 
-            # Create inset axes for bar chart
-            ax_bar = inset_axes(axes[1, 1], width="60%", height="60%", loc='center')
-            bars = ax_bar.bar(size_labels, size_data, color=colors, alpha=0.7)
-            ax_bar.set_title('Size Comparison')
-            ax_bar.set_ylabel('Bytes')
+                # Display index map as grayscale
+                ax_index = inset_axes(axes[1, 2], width="60%", height="60%", loc='center')
+                im = ax_index.imshow(index_map, cmap='viridis', aspect='auto')
+                ax_index.set_title('Index Map (Palette Indices)')
+                ax_index.axis('off')
 
-            # Add value labels on bars
-            for bar in bars:
-                height = bar.get_height()
-                ax_bar.text(bar.get_x() + bar.get_width()/2., height + max(size_data)*0.05,
-                        f'{height:,}', ha='center', va='bottom', fontsize=9)
+                # Add colorbar for index map
+                plt.colorbar(im, ax=ax_index, fraction=0.046, pad=0.04)
 
-            # Add ratio text
-            ratio_text = f'Compression Ratio: {compression_ratio:.2f}:1\nSavings: {(1 - compressed_size/original_size)*100:.1f}%'
-            axes[1, 1].text(0.5, 0.1, ratio_text, transform=axes[1, 1].transAxes,
-                        fontsize=9, horizontalalignment='center',
-                        bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7))
+                # Add index map stats
+                index_unique = len(np.unique(index_map))
+                axes[1, 2].text(0.5, 0.1, f'Unique indices: {index_unique}/{n_colors}',
+                            transform=axes[1, 2].transAxes,
+                            fontsize=9, horizontalalignment='center',
+                            bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
 
-            # Index map visualization (shows which palette index each pixel uses)
-            axes[1, 2].axis('off')
+                # Main title
+                plt.suptitle(f'Segment {seg_idx+1}: Color Quantization Results\nTop-left: {top_left_abs_row, top_left_abs_col}, Size: {h}x{w}', 
+                            fontsize=14, fontweight='bold')
 
-            # Get index map
-            index_map = np.array(seg_compression['indices']).reshape(h, w)
+                plt.tight_layout()
+                plt.show()
 
-            # Display index map as grayscale
-            ax_index = inset_axes(axes[1, 2], width="60%", height="60%", loc='center')
-            im = ax_index.imshow(index_map, cmap='viridis', aspect='auto')
-            ax_index.set_title('Index Map (Palette Indices)')
-            ax_index.axis('off')
-
-            # Add colorbar for index map
-            plt.colorbar(im, ax=ax_index, fraction=0.046, pad=0.04)
-
-            # Add index map stats
-            index_unique = len(np.unique(index_map))
-            axes[1, 2].text(0.5, 0.1, f'Unique indices: {index_unique}/{n_colors}',
-                        transform=axes[1, 2].transAxes,
-                        fontsize=9, horizontalalignment='center',
-                        bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
-
-            # Main title
-            plt.suptitle(f'Segment {seg_idx+1}: Color Quantization Results\nTop-left: {top_left_abs_row, top_left_abs_col}, Size: {h}x{w}', 
-                        fontsize=14, fontweight='bold')
-
-            plt.tight_layout()
-            plt.show()
-
-            # ==============================================
-            # 5. CONSOLE SUMMARY (CLEAN FORMAT)
-            # ==============================================
-            print(f"\n📊 COMPRESSION SUMMARY:")
-            print(f"   Original:    {original_size:>8,} bytes")
-            print(f"   Compressed:  {compressed_size:>8,} bytes")
-            print(f"   Ratio:       {compression_ratio:>8.2f}:1")
-            print(f"   Savings:     {(1 - compressed_size/original_size)*100:>7.1f}%")
-            print(f"   PSNR:        {psnr:>8.2f} dB")
-            print(f"   Palette:     {n_colors:>8} colors")
-            print(f"{'='*60}")
-        
-            """
+                # ==============================================
+                # 5. CONSOLE SUMMARY (CLEAN FORMAT)
+                # ==============================================
+                print(f"\n📊 COMPRESSION SUMMARY:")
+                print(f"   Original:    {original_size:>8,} bytes")
+                print(f"   Compressed:  {compressed_size:>8,} bytes")
+                print(f"   Ratio:       {compression_ratio:>8.2f}:1")
+                print(f"   Savings:     {(1 - compressed_size/original_size)*100:>7.1f}%")
+                print(f"   PSNR:        {psnr:>8.2f} dB")
+                print(f"   Palette:     {n_colors:>8} colors")
+                print(f"{'='*60}")
+            
+                
+            
             
 
             if seg_compression is None:
@@ -3376,10 +4287,14 @@ if __name__ == "__main__":
             # Get ROI bbox
             minr, minc, maxr, maxc = region['bbox']
             roi_bbox = (minr, minc, maxr, maxc)
+            roi_height = maxr - minr
+            roi_width = maxc - minc
             
             # Choose merging strategy
             # Option 1: Simple merge (colored pixels override black)
             merged_components = merge_region_components_simple(region_components, roi_bbox)
+
+            visualize_merged_result(merged_components, (roi_height, roi_width), minr, minc)
             
             # Option 2: Merge with segment sorting
             # merged_components = merge_region_components_better(region_components, roi_bbox)
