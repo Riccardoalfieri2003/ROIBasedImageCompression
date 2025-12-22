@@ -5585,4 +5585,22 @@ if __name__ == "__main__":
 
 
 
+    save=True
+    if save:
+        from PIL import Image
+        import numpy as np
+
+        # Assuming reconstruction_result is your decompressed result
+        reconstruction_result = decompress_color_quantization(image_seg_compression)
+
+        # Extract the image
+        reconstructed_image = reconstruction_result['image']  # This is a numpy array
+
+        # Convert numpy array to PIL Image and save
+        pil_image = Image.fromarray(reconstructed_image)
+        pil_image.save('reconstructed_image.jpg', quality=95)  # quality 1-100
+
+        print(f"✅ Image saved as 'reconstructed_image.jpg'")
+        print(f"   Size: {reconstructed_image.shape[1]}x{reconstructed_image.shape[0]}")
+
 
