@@ -43,17 +43,9 @@ from skimage.segmentation import find_boundaries
 from skimage.measure import find_contours
 import numpy as np
 
+"""
 def extract_slic_segment_boundaries(roi_segments, bbox_mask):
-    """
-    Extract boundaries of all SLIC segments within the irregular region
-    
-    Returns:
-    --------
-    list of dictionaries, each containing:
-        'segment_id': ID of the segment
-        'boundary_coords': list of (y,x) coordinates
-        'area': number of pixels in segment
-    """
+
     segment_boundaries = []
     
     # Get unique segment IDs (excluding background)
@@ -83,6 +75,81 @@ def extract_slic_segment_boundaries(roi_segments, bbox_mask):
                 })
     
     return segment_boundaries
+"""
+
+def extract_slic_segment_boundaries(roi_segments, bbox_mask):
+    """
+    Extract boundaries of all SLIC segments within the irregular region
+    
+    Returns:
+    --------
+    list of dictionaries, each containing:
+        'segment_id': ID of the segment
+        'boundary_coords': list of (y,x) coordinates
+        'area': number of pixels in segment
+    """
+    segment_boundaries = []
+    
+    # Get unique segment IDs (excluding background)
+    segment_ids = np.unique(roi_segments)
+    segment_ids = segment_ids[segment_ids != 0]  # Remove background
+    
+    for seg_id in segment_ids:
+        # Create mask for this specific segment
+        segment_mask = (roi_segments == seg_id) & bbox_mask
+        
+        # Check if segment has enough pixels
+        if np.sum(segment_mask) > 0:  # If segment exists in our region
+            # Get mask dimensions
+            rows, cols = segment_mask.shape
+            
+            # Skip if mask is too small for contour detection
+            if rows < 2 or cols < 2:
+                # Handle tiny segments - either skip or create a point boundary
+                # Get the coordinates of the single pixel
+                y_coords, x_coords = np.where(segment_mask)
+                if len(y_coords) > 0:
+                    # Create a small square boundary around the single point
+                    y, x = y_coords[0], x_coords[0]
+                    boundary_coords = [
+                        (y-0.5, x-0.5), (y-0.5, x+0.5),
+                        (y+0.5, x+0.5), (y+0.5, x-0.5)
+                    ]
+                    segment_boundaries.append({
+                        'segment_id': int(seg_id),
+                        'boundary_coords': boundary_coords,
+                        'area': np.sum(segment_mask),
+                        'num_points': len(boundary_coords),
+                        'note': 'tiny_segment'
+                    })
+                continue  # Skip to next segment
+            
+            # Find contours/boundaries
+            try:
+                contours = find_contours(segment_mask, level=0.5)
+                
+                # Take the longest contour (main boundary)
+                if len(contours) > 0:
+                    main_contour = max(contours, key=len)
+                    
+                    # Convert to list of (y,x) coordinates
+                    boundary_coords = [(coord[0], coord[1]) for coord in main_contour]
+                    
+                    segment_boundaries.append({
+                        'segment_id': int(seg_id),
+                        'boundary_coords': boundary_coords,
+                        'area': np.sum(segment_mask),
+                        'num_points': len(boundary_coords),
+                        'note': 'normal_segment'
+                    })
+            except ValueError as e:
+                # Log the error and handle tiny segments
+                print(f"Warning: Segment {seg_id} too small for contour detection: {e}")
+                # Skip this segment or handle as above
+                continue
+    
+    return segment_boundaries
+
 
 def visualize_split_analysis(region_image, overall_score, color_score, texture_score, optimal_segments):
     """Visualize the split analysis results"""

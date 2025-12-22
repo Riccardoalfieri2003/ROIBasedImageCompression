@@ -2882,7 +2882,15 @@ def merge_region_components_simple(region_components, roi_bbox):
         return []
     
     if len(region_components) == 1:
-        return region_components
+        # For single segment, ensure it has the 'actual_colors' key
+        single_seg = region_components[0].copy()  # Make a copy to avoid modifying original
+        if 'actual_colors' not in single_seg:
+            # Add the 'actual_colors' key if missing
+            if 'palette' in single_seg:
+                single_seg['actual_colors'] = len(single_seg['palette'])
+            else:
+                single_seg['actual_colors'] = 0
+        return [single_seg]
     
     print(f"\n{'='*60}")
     print(f"MERGING {len(region_components)} REGION COMPONENTS")
@@ -4201,7 +4209,7 @@ def visualize_individual_roi(roi_component, roi_index=None):
 
 if __name__ == "__main__":
 
-    image_name = 'images/waikiki.jpg'
+    image_name = 'images/Hawaii.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     

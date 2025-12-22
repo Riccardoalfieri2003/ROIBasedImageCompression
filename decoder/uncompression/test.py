@@ -6,7 +6,7 @@ if __name__ == "__main__":
     # Example data
 
     # Load images
-    original_path = 'images/waikiki.jpg'
+    original_path = 'images/Hawaii.jpg'
     reconstructed_path = 'compressed_waikiki2.hccq'  # Your saved reconstruction
 
     # Load original image
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     
     # Calculate metrics
     print("\nCalculating quality metrics...")
-    #metrics = calculate_quality_metrics(original, reconstructed)
+    metrics = calculate_quality_metrics(original, reconstructed)
     metrics=calculate_adaptive_quality_metrics(original, reconstructed)
     
     # Create difference visualizations
@@ -48,6 +48,8 @@ if __name__ == "__main__":
     #print_quality_report(metrics)
     print_adaptive_metrics(metrics, original.shape)
     
+
+    metrics = calculate_quality_metrics(original, reconstructed)
     # Create comprehensive plot
     print("\nGenerating comparison visualization...")
     plot_comparison(original, reconstructed, metrics, differences)
