@@ -4169,7 +4169,7 @@ def visualize_individual_roi(roi_component, roi_index=None):
     plt.tight_layout()
     plt.show()
     
-    return roi_image
+    return roi_image, top_left
 
 
 
@@ -4207,7 +4207,6 @@ if __name__ == "__main__":
     
     unified, regions, roi_image, nonroi_image, roi_mask, nonroi_mask = get_regions(image_rgb)
     roi_regions, nonroi_regions = extract_regions(image_rgb, roi_mask, nonroi_mask)
-
 
     print(f"Found {len(roi_regions)} ROI regions")
     print(f"Found {len(nonroi_regions)} non-ROI regions")
@@ -5159,7 +5158,9 @@ if __name__ == "__main__":
 
     original_image_height, original_image_width, _ = image_rgb.shape
 
-    # Extract the first (and only) element from each list
+
+
+    """# Extract the first (and only) element from each list
     all_roi_components_flat = [roi[0] for roi in ROI_components]
 
     # 1. Visualize all ROIs together in the image context
@@ -5174,7 +5175,206 @@ if __name__ == "__main__":
         print(f"VISUALIZING ROI {i}")
         print(f"{'='*60}")
         
-        roi_image = visualize_individual_roi(roi, roi_index=i)
+        roi_image, roi_topleft = visualize_individual_roi(roi, roi_index=i)
 
 
+
+
+
+    
+
+
+    # Extract the first (and only) element from each list
+    all_nonroi_components_flat = [roi[0] for roi in nonROI_components]
+
+    # 1. Visualize all ROIs together in the image context
+    full_reconstruction, roi_mask = visualize_all_roi_components(
+        all_nonroi_components_flat, 
+        image_shape=(original_image_height, original_image_width)
+    )
+
+    # 2. Visualize individual ROIs in detail
+    for i, nonroi in enumerate(all_nonroi_components_flat):
+        print(f"\n{'='*60}")
+        print(f"VISUALIZING ROI {i}")
+        print(f"{'='*60}")
+        
+        nonroi_image = visualize_individual_roi(nonroi, roi_index=i)
+    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    """
+    Second phase of hierarchical clustering:
+    Clustering colors between each ROI / nonROI
+    """
+
+    #ROI
+
+    # First, collect all ROI components
+    all_roi_components_flat = [roi[0] for roi in ROI_components]
+
+    # Use the entire image as the bbox
+    image_bbox = (0, 0, original_image_height, original_image_width)
+
+    roi_image = merge_region_components_simple(
+        all_roi_components_flat,
+        roi_bbox=image_bbox
+    )
+
+    # Extract the merged segment dictionary
+    merged_segment = roi_image[0]  # This contains palette and indices, NOT the image!
+
+    quality=85
+    n_colors = merged_segment['actual_colors']
+
+    distance= 256 - (256*quality / 100)
+    eps=math.pow(100/quality,3)
+
+    coefficient_max_samples=quality/100
+    max_sample_pre=math.pow(n_colors, coefficient_max_samples )
+    #max_colors_per_cluster=math.ceil( math.pow(math.e,max_sample_pre) * 3*100/quality  )
+    max_colors_per_cluster=math.ceil(max_sample_pre * 3*100/quality  )
+
+    # ==============================================
+    # OPTION 1: If you want to cluster the merged palette
+    # ==============================================
+    # You already have the merged palette in merged_segment
+    # Just cluster it directly:
+    ROI_seg_compression = cluster_palette_colors(
+        merged_segment,  # Pass the dictionary
+        eps=eps,
+        min_samples=1,
+        max_colors_per_cluster=max_colors_per_cluster
+    )
+
+    
+
+
+    show_reconstruction_result=True
+    if show_reconstruction_result:
+        # ==============================================
+        # 3. RECONSTRUCT 
+        # ==============================================
+        reconstruction_result = decompress_color_quantization(ROI_seg_compression)
+        
+        # ==============================================
+        # 4. SIMPLE VISUALIZATION
+        # ==============================================
+        print(f"\n{'='*60}")
+        print(f"ROI RECONSTRUCTION")
+        print(f"{'='*60}")
+        
+        # Get basic info
+        h, w = reconstruction_result['shape']
+        top_left = reconstruction_result['top_left']
+        n_colors = ROI_seg_compression['compressed_colors']
+        psnr = ROI_seg_compression.get('psnr', 0)
+        
+        # Get reconstructed image
+        reconstructed_img = reconstruction_result['image']
+        
+        # Simple display - just the reconstruction
+        import matplotlib.pyplot as plt
+        
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        
+        # 1. Reconstructed ROI
+        axes[0].imshow(reconstructed_img)
+        axes[0].set_title(f'Reconstructed ROI\n{h}x{w} pixels\n{n_colors} colors\nPSNR: {psnr:.1f} dB')
+        axes[0].axis('off')
+        
+        # 2. Colored pixels only (white background)
+        colored_only = reconstructed_img.copy()
+        black_mask = np.all(reconstructed_img == [0, 0, 0], axis=2)
+        colored_only[black_mask] = [255, 255, 255]  # White background for black areas
+        
+        axes[1].imshow(colored_only)
+        axes[1].set_title(f'Colored Pixels Only\nBlack pixels: {np.sum(black_mask):,}\n({np.sum(black_mask)/(h*w)*100:.1f}%)')
+        axes[1].axis('off')
+        
+        plt.suptitle(f'ROI at position {top_left}', fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.show()
+        
+        # Console summary
+        print(f"Position: {top_left}")
+        print(f"Size: {h}x{w} = {h*w:,} pixels")
+        print(f"Colors: {n_colors}")
+        print(f"Black pixels: {np.sum(black_mask):,} ({np.sum(black_mask)/(h*w)*100:.1f}%)")
+        print(f"Colored pixels: {h*w - np.sum(black_mask):,} ({(h*w - np.sum(black_mask))/(h*w)*100:.1f}%)")
+        print(f"PSNR: {psnr:.1f} dB")
+
+
+
+
+
+
+
+
+    #nonROI
+
+    quality=10
+    n_colors = nonroi_image['compressed_colors']
+
+    distance= 256 - (256*quality / 100)
+    eps=math.pow(100/quality,3)
+
+    coefficient_max_samples=quality/100
+    max_sample_pre=math.pow(n_colors, coefficient_max_samples )
+    #max_colors_per_cluster=math.ceil( math.pow(math.e,max_sample_pre) * 3*100/quality  )
+    max_colors_per_cluster=math.ceil(max_sample_pre * 3*100/quality  )
+
+
+    nonROI_seg_compression = cluster_palette_colors(
+        nonroi_image,
+        eps=eps,           # Distance threshold (0-255 scale)
+        min_samples=1,      # Min colors to form cluster
+        max_colors_per_cluster=max_colors_per_cluster  # Split large clusters
+    )
 
