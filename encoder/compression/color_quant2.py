@@ -4201,7 +4201,7 @@ def visualize_individual_roi(roi_component, roi_index=None):
 
 if __name__ == "__main__":
 
-    image_name = 'images/Lenna.webp'
+    image_name = 'images/waikiki.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -5584,9 +5584,8 @@ if __name__ == "__main__":
 
 
 
-
-    save=True
-    if save:
+    savePicture=False
+    if savePicture:
         from PIL import Image
         import numpy as np
 
@@ -5604,3 +5603,45 @@ if __name__ == "__main__":
         print(f"   Size: {reconstructed_image.shape[1]}x{reconstructed_image.shape[0]}")
 
 
+
+
+
+
+    saveCompression = True
+    if saveCompression:
+        print(f"\n{'='*60}")
+        print(f"FINAL LOSS LESS COMPRESSION")
+        print(f"{'='*60}")
+        
+        # Get your final data
+        final_data = image_seg_compression  # or clustered_result
+        
+        # Extract components
+        shape = final_data['shape']
+        palette = final_data['palette']
+        indices_flat = final_data['indices']
+        
+        # Convert to matrix
+        h, w = shape
+        indices_matrix = np.array(indices_flat).reshape(h, w)
+        
+        print(f"Compressing: {w}x{h} image, {len(palette)} colors")
+        
+        # Compress
+        from encoder.compression.compression import lossless_compress, save_compressed
+        
+        compressed_data = lossless_compress(palette, indices_matrix, shape)
+        
+        # Save
+        filename = "compressed_waikiki.a2f"
+        file_size = save_compressed(compressed_data, filename)
+        
+        # Stats
+        original_size = h * w * 3
+        compression_ratio = original_size / file_size
+        
+        print(f"✅ Saved: {filename}")
+        print(f"   Original: {original_size:,} bytes")
+        print(f"   Compressed: {file_size:,} bytes")
+        print(f"   Ratio: {compression_ratio:.2f}:1")
+        print(f"   Savings: {(1 - file_size/original_size)*100:.1f}%")            

@@ -317,6 +317,10 @@ def print_quality_report(metrics):
     print(f"   SSIM: {ssim_rating} - {ssim_desc}")
     print("="*60)
 
+
+
+
+
 # Main execution
 if __name__ == "__main__":
     # Load images
