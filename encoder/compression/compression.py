@@ -140,7 +140,3 @@ def save_compressed(compressed_data, filename):
         f.write(final_compressed)
     
     return len(final_compressed) + 8  # +8 for header
-
-
-
-

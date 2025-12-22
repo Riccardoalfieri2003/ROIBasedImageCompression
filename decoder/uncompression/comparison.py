@@ -321,8 +321,308 @@ def print_quality_report(metrics):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+
+def calculate_adaptive_quality_metrics(original, reconstructed):
+    """
+    Calculate quality metrics with adaptive outlier exclusion.
+    Automatically detects and excludes outliers based on error distribution.
+    """
+    # Convert to float
+    original_f = original.astype(np.float32)
+    reconstructed_f = reconstructed.astype(np.float32)
+    
+    # Calculate per-pixel max error (worst channel error)
+    abs_error = np.abs(original_f - reconstructed_f)
+    max_error_per_pixel = np.max(abs_error, axis=2).flatten()  # Shape: (h*w)
+    
+    # ==============================================
+    # 1. ANALYZE ERROR DISTRIBUTION
+    # ==============================================
+    error_stats = {
+        'min': float(np.min(max_error_per_pixel)),
+        'max': float(np.max(max_error_per_pixel)),
+        'mean': float(np.mean(max_error_per_pixel)),
+        'median': float(np.median(max_error_per_pixel)),
+        'std': float(np.std(max_error_per_pixel)),
+        'q75': float(np.percentile(max_error_per_pixel, 75)),
+        'q90': float(np.percentile(max_error_per_pixel, 90)),
+        'q95': float(np.percentile(max_error_per_pixel, 95)),
+        'q99': float(np.percentile(max_error_per_pixel, 99))
+    }
+    
+    # ==============================================
+    # 2. DETECT OUTLIERS USING MULTIPLE METHODS
+    # ==============================================
+    outlier_masks = {}
+    
+    # Method 1: IQR (Interquartile Range) - standard statistical method
+    Q1 = np.percentile(max_error_per_pixel, 25)
+    Q3 = np.percentile(max_error_per_pixel, 75)
+    IQR = Q3 - Q1
+    iqr_threshold = Q3 + 2.5 * IQR  # Conservative: 2.5×IQR
+    outlier_masks['iqr'] = max_error_per_pixel > iqr_threshold
+    
+    # Method 2: Z-score (standard deviations from mean)
+    z_scores = (max_error_per_pixel - error_stats['mean']) / error_stats['std']
+    z_threshold = 3.0  # 3 standard deviations
+    outlier_masks['zscore'] = np.abs(z_scores) > z_threshold
+    
+    # Method 3: Percentile-based (top 1% errors)
+    percentile_threshold = np.percentile(max_error_per_pixel, 99)
+    outlier_masks['percentile'] = max_error_per_pixel > percentile_threshold
+    
+    # Method 4: Adaptive threshold based on error distribution
+    # If distribution is skewed, use median-based threshold
+    if error_stats['mean'] > error_stats['median'] * 1.5:  # Right-skewed
+        adaptive_threshold = error_stats['median'] + 3 * error_stats['std']
+    else:
+        adaptive_threshold = error_stats['mean'] + 2.5 * error_stats['std']
+    outlier_masks['adaptive'] = max_error_per_pixel > adaptive_threshold
+    
+    # ==============================================
+    # 3. CHOOSE BEST OUTLIER DETECTION METHOD
+    # ==============================================
+    # Select method that excludes reasonable amount (1-10% typically)
+    best_method = None
+    best_mask = None
+    
+    for method_name, mask in outlier_masks.items():
+        outlier_count = np.sum(mask)
+        outlier_pct = outlier_count / len(max_error_per_pixel) * 100
+        
+        # Good outlier detection: excludes 0.1% to 10% of pixels
+        if 0.1 <= outlier_pct <= 10.0:
+            best_method = method_name
+            best_mask = mask
+            break
+    
+    # If no method found in ideal range, use adaptive
+    if best_method is None:
+        best_method = 'adaptive'
+        best_mask = outlier_masks['adaptive']
+    
+    outlier_count = np.sum(best_mask)
+    outlier_pct = outlier_count / len(max_error_per_pixel) * 100
+    inlier_mask = ~best_mask
+    
+    # ==============================================
+    # 4. CALCULATE METRICS WITH/WITHOUT OUTLIERS
+    # ==============================================
+    metrics = {
+        'error_distribution': error_stats,
+        'outlier_detection': {
+            'method': best_method,
+            'threshold': float({
+                'iqr': iqr_threshold,
+                'zscore': error_stats['mean'] + z_threshold * error_stats['std'],
+                'percentile': percentile_threshold,
+                'adaptive': adaptive_threshold
+            }[best_method]),
+            'outlier_count': int(outlier_count),
+            'outlier_percentage': float(outlier_pct),
+            'inlier_count': int(len(max_error_per_pixel) - outlier_count),
+            'inlier_percentage': float(100 - outlier_pct)
+        }
+    }
+    
+    # ==============================================
+    # 5. CALCULATE ALL METRICS
+    # ==============================================
+    # A) WITH ALL PIXELS
+    mse_all = np.mean((original_f - reconstructed_f) ** 2)
+    metrics['all_pixels'] = {
+        'psnr': 10 * np.log10(255*255/mse_all) if mse_all > 0 else float('inf'),
+        'mse': float(mse_all),
+        'rmse': float(np.sqrt(mse_all)),
+        'mae': float(np.mean(abs_error)),
+        'max_error': error_stats['max'],
+        'pixel_count': int(len(max_error_per_pixel))
+    }
+    
+    # B) WITHOUT OUTLIERS (if any outliers detected)
+    if outlier_count > 0 and outlier_count < len(max_error_per_pixel):
+        # Get inlier pixels
+        original_inliers = original_f.reshape(-1, 3)[inlier_mask]
+        reconstructed_inliers = reconstructed_f.reshape(-1, 3)[inlier_mask]
+        
+        if len(original_inliers) > 0:
+            mse_inliers = np.mean((original_inliers - reconstructed_inliers) ** 2)
+            
+            metrics['without_outliers'] = {
+                'psnr': 10 * np.log10(255*255/mse_inliers) if mse_inliers > 0 else float('inf'),
+                'mse': float(mse_inliers),
+                'rmse': float(np.sqrt(mse_inliers)),
+                'mae': float(np.mean(np.abs(original_inliers - reconstructed_inliers))),
+                'max_error': float(np.max(np.abs(original_inliers - reconstructed_inliers))),
+                'pixel_count': int(len(original_inliers))
+            }
+    
+    # C) PERCENTILE-BASED METRICS
+    for percentile in [99, 95, 90, 75]:
+        threshold = np.percentile(max_error_per_pixel, percentile)
+        mask = max_error_per_pixel <= threshold
+        
+        orig_percentile = original_f.reshape(-1, 3)[mask]
+        recon_percentile = reconstructed_f.reshape(-1, 3)[mask]
+        
+        if len(orig_percentile) > 0:
+            mse_percentile = np.mean((orig_percentile - recon_percentile) ** 2)
+            
+            metrics[f'percentile_{percentile}'] = {
+                'psnr': 10 * np.log10(255*255/mse_percentile) if mse_percentile > 0 else float('inf'),
+                'mse': float(mse_percentile),
+                'max_error_included': float(threshold),
+                'pixel_count': int(len(orig_percentile)),
+                'percentage': float(percentile)
+            }
+    
+    # ==============================================
+    # 6. CALCULATE SSIM (with and without outliers)
+    # ==============================================
+    try:
+        metrics['ssim'] = {}
+        metrics['ssim']['full'] = float(structural_similarity(
+            original, reconstructed, data_range=255, channel_axis=2, win_size=7
+        ))
+        
+        if outlier_count > 0 and outlier_count < len(max_error_per_pixel):
+            # Create masked version for SSIM
+            h, w = original.shape[:2]
+            original_masked = original.copy()
+            reconstructed_masked = reconstructed.copy()
+            
+            # Reshape outlier mask to 2D
+            outlier_mask_2d = best_mask.reshape(h, w)
+            
+            # Set outliers to neutral gray for SSIM
+            original_masked[outlier_mask_2d] = [128, 128, 128]
+            reconstructed_masked[outlier_mask_2d] = [128, 128, 128]
+            
+            metrics['ssim']['without_outliers'] = float(structural_similarity(
+                original_masked, reconstructed_masked, data_range=255, channel_axis=2, win_size=7
+            ))
+    except:
+        metrics['ssim'] = {'full': 0}
+    
+    # ==============================================
+    # 7. VISUALIZE ERROR DISTRIBUTION
+    # ==============================================
+    metrics['error_histogram'] = {
+        'bins': np.histogram(max_error_per_pixel, bins=50)[0].tolist(),
+        'bin_edges': np.histogram(max_error_per_pixel, bins=50)[1].tolist()
+    }
+    
+    return metrics
+
+
+def print_adaptive_metrics(metrics, original_shape):
+    """Print adaptive metrics analysis."""
+    h, w = original_shape[:2]
+    total_pixels = h * w
+    
+    print("\n" + "="*70)
+    print("ADAPTIVE QUALITY METRICS WITH OUTLIER DETECTION")
+    print("="*70)
+    
+    # Error distribution
+    ed = metrics['error_distribution']
+    print(f"\n📈 ERROR DISTRIBUTION ANALYSIS:")
+    print(f"   Total pixels: {total_pixels:,}")
+    print(f"   Min error:    {ed['min']:8.2f}")
+    print(f"   Max error:    {ed['max']:8.2f}  ← LIKELY OUTLIERS")
+    print(f"   Mean error:   {ed['mean']:8.2f}")
+    print(f"   Median error: {ed['median']:8.2f}")
+    print(f"   Std dev:      {ed['std']:8.2f}")
+    print(f"   75th %ile:    {ed['q75']:8.2f}")
+    print(f"   90th %ile:    {ed['q90']:8.2f}")
+    print(f"   95th %ile:    {ed['q95']:8.2f}")
+    print(f"   99th %ile:    {ed['q99']:8.2f}")
+    
+    # Outlier detection
+    od = metrics['outlier_detection']
+    print(f"\n🎯 OUTLIER DETECTION ({od['method'].upper()}):")
+    print(f"   Threshold:    {od['threshold']:8.2f}")
+    print(f"   Outliers:     {od['outlier_count']:8,} pixels ({od['outlier_percentage']:.2f}%)")
+    print(f"   Inliers:      {od['inlier_count']:8,} pixels ({od['inlier_percentage']:.2f}%)")
+    
+    # Metrics comparison
+    print(f"\n📊 METRICS COMPARISON:")
+    
+    # All pixels
+    allp = metrics['all_pixels']
+    print(f"   ALL PIXELS ({allp['pixel_count']:,}):")
+    print(f"     PSNR:  {allp['psnr']:8.2f} dB")
+    print(f"     MSE:   {allp['mse']:8.2f}")
+    print(f"     MAE:   {allp['mae']:8.2f}")
+    
+    # Without outliers
+    if 'without_outliers' in metrics:
+        wo = metrics['without_outliers']
+        improvement = wo['psnr'] - allp['psnr']
+        
+        print(f"\n   WITHOUT OUTLIERS ({wo['pixel_count']:,}):")
+        print(f"     PSNR:  {wo['psnr']:8.2f} dB  (+{improvement:.2f} dB)")
+        print(f"     MSE:   {wo['mse']:8.2f}  ({wo['mse']/allp['mse']*100:.1f}% of original)")
+        print(f"     MAE:   {wo['mae']:8.2f}  ({wo['mae']/allp['mae']*100:.1f}% of original)")
+        print(f"     Max:   {wo['max_error']:8.2f}")
+    
+    # Percentile metrics
+    print(f"\n📐 PERCENTILE METRICS:")
+    for percentile in [99, 95, 90, 75]:
+        key = f'percentile_{percentile}'
+        if key in metrics:
+            pm = metrics[key]
+            print(f"   Top {100-percentile}% excluded ({pm['pixel_count']:,} pixels):")
+            print(f"     PSNR: {pm['psnr']:8.2f} dB")
+    
+    # SSIM
+    if 'ssim' in metrics:
+        print(f"\n🖼️  STRUCTURAL SIMILARITY (SSIM):")
+        print(f"   Full image:      {metrics['ssim'].get('full', 0):.4f}")
+        if 'without_outliers' in metrics['ssim']:
+            print(f"   Without outliers: {metrics['ssim']['without_outliers']:.4f}")
+    
+    print("="*70)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Main execution
-if __name__ == "__main__":
+def main():
     # Load images
     original_path = 'images/Lenna.webp'
     reconstructed_path = 'images/reconstructed_image.jpg'  # Your saved reconstruction
@@ -348,4 +648,3 @@ if __name__ == "__main__":
     # Create comprehensive plot
     print("\nGenerating comparison visualization...")
     plot_comparison(original, reconstructed, metrics, differences)
-    

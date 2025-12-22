@@ -4316,6 +4316,7 @@ if __name__ == "__main__":
         # 3. APPLY SLIC SEGMENTATION TO THE ROI
         # ==============================================
         print(f"\n  Applying SLIC segmentation...")
+        if optimal_segments<1: optimal_segments=1
         roi_segments, texture_map = enhanced_slic_with_texture(bbox_region, n_segments=optimal_segments)
         segment_boundaries = extract_slic_segment_boundaries(roi_segments, bbox_mask)
         
@@ -4416,7 +4417,7 @@ if __name__ == "__main__":
                 (top_left_abs_row, top_left_abs_col)
             )
 
-            quality=50
+            quality=25
             n_colors = seg_compression['actual_colors']
 
             distance= 256 - (256*quality / 100)
@@ -4781,6 +4782,7 @@ if __name__ == "__main__":
         # 3. APPLY SLIC SEGMENTATION TO THE ROI
         # ==============================================
         print(f"\n  Applying SLIC segmentation...")
+        if optimal_segments<1: optimal_segments=1
         roi_segments, texture_map = enhanced_slic_with_texture(bbox_region, n_segments=optimal_segments)
         segment_boundaries = extract_slic_segment_boundaries(roi_segments, bbox_mask)
         
@@ -4881,7 +4883,7 @@ if __name__ == "__main__":
                 (top_left_abs_row, top_left_abs_col)
             )
 
-            quality=10
+            quality=5
             n_colors = seg_compression['actual_colors']
 
             distance= 256 - (256*quality / 100)
@@ -5262,7 +5264,24 @@ if __name__ == "__main__":
     #ROI
 
     # First, collect all ROI components
-    all_roi_components_flat = [roi[0] for roi in ROI_components]
+    try: all_roi_components_flat = [roi[0] for roi in ROI_components]
+    except: all_roi_components_flat = [roi for roi in ROI_components]
+
+    # More robust flattening
+    all_roi_components_flat = []
+    for roi in ROI_components:
+        if isinstance(roi, dict):
+            all_roi_components_flat.append(roi)
+        elif isinstance(roi, list):
+            for item in roi:
+                if isinstance(item, dict):
+                    all_roi_components_flat.append(item)
+                else:
+                    print(f"Warning: Skipping non-dict item in list: {type(item)}")
+        else:
+            print(f"Warning: Skipping unexpected type: {type(roi)}")
+
+    print(f"Processed {len(ROI_components)} inputs → {len(all_roi_components_flat)} segments")
 
     # Use the entire image as the bbox
     image_bbox = (0, 0, original_image_height, original_image_width)
@@ -5275,7 +5294,7 @@ if __name__ == "__main__":
     # Extract the merged segment dictionary
     merged_segment = roi_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=85
+    quality=50
     n_colors = merged_segment['actual_colors']
 
     distance= 256 - (256*quality / 100)
@@ -5366,7 +5385,24 @@ if __name__ == "__main__":
     #nonROI
 
     # First, collect all ROI components
-    all_nonroi_components_flat = [roi[0] for roi in nonROI_components]
+    try: all_nonroi_components_flat = [roi[0] for roi in nonROI_components]
+    except:  all_nonroi_components_flat = [roi for roi in nonROI_components]
+
+    # More robust flattening
+    all_nonroi_components_flat = []
+    for nonroi in nonROI_components:
+        if isinstance(nonroi, dict):
+            all_nonroi_components_flat.append(nonroi)
+        elif isinstance(nonroi, list):
+            for item in nonroi:
+                if isinstance(item, dict):
+                    all_nonroi_components_flat.append(item)
+                else:
+                    print(f"Warning: Skipping non-dict item in list: {type(item)}")
+        else:
+            print(f"Warning: Skipping unexpected type: {type(nonroi)}")
+
+    print(f"Processed {len(nonROI_components)} inputs → {len(all_nonroi_components_flat)} segments")
 
     # Use the entire image as the bbox
     image_bbox = (0, 0, original_image_height, original_image_width)
@@ -5379,7 +5415,7 @@ if __name__ == "__main__":
     # Extract the merged segment dictionary
     merged_segment = nonroi_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=75
+    quality=35
     n_colors = merged_segment['actual_colors']
 
     distance= 256 - (256*quality / 100)
@@ -5500,7 +5536,7 @@ if __name__ == "__main__":
     # Extract the merged segment dictionary
     merged_segment = regions_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=95
+    quality=75
     n_colors = merged_segment['actual_colors']
 
     distance= 256 - (256*quality / 100)
@@ -5633,7 +5669,7 @@ if __name__ == "__main__":
         compressed_data = lossless_compress(palette, indices_matrix, shape)
         
         # Save
-        filename = "compressed_waikiki.a2f"
+        filename = "compressed_waikiki2.hccq"
         file_size = save_compressed(compressed_data, filename)
         
         # Stats

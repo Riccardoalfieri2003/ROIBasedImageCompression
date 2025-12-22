@@ -1,13 +1,13 @@
 import cv2
 from decoder.uncompression.uncompression import lossless_decompress, load_compressed, decompress_color_quantization
-from decoder.uncompression.comparison import load_images, calculate_quality_metrics, create_difference_visualization, print_quality_report, plot_comparison
+from decoder.uncompression.comparison import calculate_quality_metrics, create_difference_visualization, print_quality_report, plot_comparison, calculate_adaptive_quality_metrics, print_adaptive_metrics
 
 if __name__ == "__main__":
     # Example data
 
     # Load images
-    original_path = 'images/Lenna.webp'
-    reconstructed_path = 'compressed_Lenna.a2f'  # Your saved reconstruction
+    original_path = 'images/waikiki.jpg'
+    reconstructed_path = 'compressed_waikiki2.hccq'  # Your saved reconstruction
 
     # Load original image
     original_bgr = cv2.imread(original_path)
@@ -37,14 +37,16 @@ if __name__ == "__main__":
     
     # Calculate metrics
     print("\nCalculating quality metrics...")
-    metrics = calculate_quality_metrics(original, reconstructed)
+    #metrics = calculate_quality_metrics(original, reconstructed)
+    metrics=calculate_adaptive_quality_metrics(original, reconstructed)
     
     # Create difference visualizations
     print("Creating difference visualizations...")
     differences = create_difference_visualization(original, reconstructed)
     
     # Print report
-    print_quality_report(metrics)
+    #print_quality_report(metrics)
+    print_adaptive_metrics(metrics, original.shape)
     
     # Create comprehensive plot
     print("\nGenerating comparison visualization...")
