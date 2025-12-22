@@ -5249,6 +5249,11 @@ if __name__ == "__main__":
 
 
 
+
+
+
+    image_components=[]
+
     """
     Second phase of hierarchical clustering:
     Clustering colors between each ROI / nonROI
@@ -5292,6 +5297,8 @@ if __name__ == "__main__":
         min_samples=1,
         max_colors_per_cluster=max_colors_per_cluster
     )
+
+    image_components.append(ROI_seg_compression)
 
     
 
@@ -5395,6 +5402,8 @@ if __name__ == "__main__":
         max_colors_per_cluster=max_colors_per_cluster
     )
 
+    image_components.append(nonROI_seg_compression)
+
     
 
 
@@ -5417,6 +5426,127 @@ if __name__ == "__main__":
         top_left = reconstruction_result['top_left']
         n_colors = nonROI_seg_compression['compressed_colors']
         psnr = nonROI_seg_compression.get('psnr', 0)
+        
+        # Get reconstructed image
+        reconstructed_img = reconstruction_result['image']
+        
+        # Simple display - just the reconstruction
+        import matplotlib.pyplot as plt
+        
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        
+        # 1. Reconstructed ROI
+        axes[0].imshow(reconstructed_img)
+        axes[0].set_title(f'Reconstructed ROI\n{h}x{w} pixels\n{n_colors} colors\nPSNR: {psnr:.1f} dB')
+        axes[0].axis('off')
+        
+        # 2. Colored pixels only (white background)
+        colored_only = reconstructed_img.copy()
+        black_mask = np.all(reconstructed_img == [0, 0, 0], axis=2)
+        colored_only[black_mask] = [255, 255, 255]  # White background for black areas
+        
+        axes[1].imshow(colored_only)
+        axes[1].set_title(f'Colored Pixels Only\nBlack pixels: {np.sum(black_mask):,}\n({np.sum(black_mask)/(h*w)*100:.1f}%)')
+        axes[1].axis('off')
+        
+        plt.suptitle(f'ROI at position {top_left}', fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.show()
+        
+        # Console summary
+        print(f"Position: {top_left}")
+        print(f"Size: {h}x{w} = {h*w:,} pixels")
+        print(f"Colors: {n_colors}")
+        print(f"Black pixels: {np.sum(black_mask):,} ({np.sum(black_mask)/(h*w)*100:.1f}%)")
+        print(f"Colored pixels: {h*w - np.sum(black_mask):,} ({(h*w - np.sum(black_mask))/(h*w)*100:.1f}%)")
+        print(f"PSNR: {psnr:.1f} dB")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    """
+    Final peak of clustering: whole image
+    """
+
+
+    # First, collect all ROI components
+    all_image_components_flat = [roi for roi in image_components]
+
+    # Use the entire image as the bbox
+    image_bbox = (0, 0, original_image_height, original_image_width)
+
+    regions_image = merge_region_components_simple(
+        all_image_components_flat,
+        roi_bbox=image_bbox
+    )
+
+    # Extract the merged segment dictionary
+    merged_segment = regions_image[0]  # This contains palette and indices, NOT the image!
+
+    quality=95
+    n_colors = merged_segment['actual_colors']
+
+    distance= 256 - (256*quality / 100)
+    eps=math.pow(100/quality,3)
+
+    coefficient_max_samples=quality/100
+    max_sample_pre=math.pow(n_colors, coefficient_max_samples )
+    #max_colors_per_cluster=math.ceil( math.pow(math.e,max_sample_pre) * 3*100/quality  )
+    max_colors_per_cluster=math.ceil(max_sample_pre * 3*100/quality  )
+
+    # ==============================================
+    # OPTION 1: If you want to cluster the merged palette
+    # ==============================================
+    # You already have the merged palette in merged_segment
+    # Just cluster it directly:
+    image_seg_compression = cluster_palette_colors(
+        merged_segment,  # Pass the dictionary
+        eps=eps,
+        min_samples=1,
+        max_colors_per_cluster=max_colors_per_cluster
+    )
+
+    image_components.append(nonROI_seg_compression)
+
+    
+
+
+    show_reconstruction_result=True
+    if show_reconstruction_result:
+        # ==============================================
+        # 3. RECONSTRUCT 
+        # ==============================================
+        reconstruction_result = decompress_color_quantization(image_seg_compression)
+        
+        # ==============================================
+        # 4. SIMPLE VISUALIZATION
+        # ==============================================
+        print(f"\n{'='*60}")
+        print(f"ROI RECONSTRUCTION")
+        print(f"{'='*60}")
+        
+        # Get basic info
+        h, w = reconstruction_result['shape']
+        top_left = reconstruction_result['top_left']
+        n_colors = image_seg_compression['compressed_colors']
+        psnr = image_seg_compression.get('psnr', 0)
         
         # Get reconstructed image
         reconstructed_img = reconstruction_result['image']
