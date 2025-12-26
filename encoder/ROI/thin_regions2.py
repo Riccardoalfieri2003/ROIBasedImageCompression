@@ -41,8 +41,6 @@ def remove_thin_structures_optimized(binary_image, density_threshold=0.2,
     thin_regions_mask = identify_thin_regions_ultrafast(binary_image)
     print(f"thin_regions_mask: {time.time() - start_time:.3f} seconds")
     
-    start_time = time.time()
-    
     # ==============================================
     # OPTIMIZED REGION PROCESSING (Replaces the slow loop)
     # ==============================================
@@ -97,7 +95,6 @@ def remove_thin_structures_optimized(binary_image, density_threshold=0.2,
     removed_regions = len(regions_to_remove_ids)
     
     print(f"Removed {removed_pixels} pixels from {removed_regions} thin regions in low-density areas")
-    print(f"post: {time.time() - start_time:.3f} seconds")
     
     return cleaned_image
 
