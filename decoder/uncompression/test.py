@@ -6,8 +6,8 @@ if __name__ == "__main__":
     # Example data
 
     # Load images
-    original_path = 'images/Lenna.webp'
-    reconstructed_path = 'compressed_komodo.hccq'  # Your saved reconstruction
+    original_path = 'images/waikiki.jpg'
+    reconstructed_path = 'compressed_komodo2.hccq'  # Your saved reconstruction
 
     # Load original image
     original_bgr = cv2.imread(original_path)
@@ -28,6 +28,17 @@ if __name__ == "__main__":
 
     reconstruction_result = decompress_color_quantization(compressed)
     reconstructed = reconstruction_result['image']  # This is a numpy array
+
+    import cv2
+    import numpy as np
+
+    # Assuming reconstructed is a numpy array with shape (h, w, 3)
+    reconstructed = cv2.GaussianBlur(reconstructed, (3, 3), 0)
+
+    import matplotlib.pyplot as plt
+    plt.title("reconstructed")
+    plt.imshow(reconstructed)
+    plt.show()
 
     #original, reconstructed = load_images(original_path, reconstructed_path)
     

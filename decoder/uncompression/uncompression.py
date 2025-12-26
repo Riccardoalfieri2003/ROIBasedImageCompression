@@ -53,20 +53,6 @@ def decompress_indices_rle_huffman(indices_data, total_pixels):
     return indices
 
 
-def decompress_indices_simple(indices_data, total_pixels):
-    """
-    Decompress indices that were compressed with direct zlib.
-    
-    Args:
-        indices_data: Compressed indices bytes
-        total_pixels: Total number of pixels (h * w)
-    
-    Returns:
-        list: Flat list of indices
-    """
-    decompressed = zlib.decompress(indices_data)
-    indices_np = np.frombuffer(decompressed, dtype=np.uint16)
-    return indices_np.tolist()
 
 
 def lossless_decompress(compressed_data):
@@ -84,7 +70,10 @@ def lossless_decompress(compressed_data):
     palette_size = compressed_data['ps']
     palette_data = compressed_data['p']
     indices_data = compressed_data['i']
-    method = "zlib"
+    
+    # Get dtype from metadata (added in lossless_compress_optimized)
+    dtype_str = compressed_data.get('idx_dtype', 'uint16')  # Default to uint16 for backward compatibility
+    method = compressed_data.get('method', 'zlib_direct')
     
     # Decompress palette
     palette = decompress_palette(palette_data, palette_size)
@@ -96,10 +85,44 @@ def lossless_decompress(compressed_data):
     if method == 'rle_huffman':
         indices_list = decompress_indices_rle_huffman(indices_data, total_pixels)
     else:  # zlib_direct
-        indices_list = decompress_indices_simple(indices_data, total_pixels)
+        indices_list = decompress_indices_simple(indices_data, total_pixels, dtype_str)
     
     return palette, indices_list, shape
 
+def decompress_indices_simple(indices_data, total_pixels, dtype_str='uint16'):
+    """
+    Decompress indices that were compressed with direct zlib.
+    
+    Args:
+        indices_data: Compressed indices bytes
+        total_pixels: Total number of pixels (h * w)
+        dtype_str: String indicating dtype ('uint8', 'uint16', 'uint32')
+    
+    Returns:
+        list: Flat list of indices
+    """
+    decompressed = zlib.decompress(indices_data)
+    
+    # Use correct dtype based on metadata
+    if dtype_str == 'uint8':
+        dtype = np.uint8
+    elif dtype_str == 'uint16':
+        dtype = np.uint16
+    elif dtype_str == 'uint32':
+        dtype = np.uint32
+    else:
+        # Fallback: try to infer from data size
+        bytes_per_pixel = len(decompressed) / total_pixels if total_pixels > 0 else 2
+        
+        if bytes_per_pixel <= 1:
+            dtype = np.uint8
+        elif bytes_per_pixel <= 2:
+            dtype = np.uint16
+        else:
+            dtype = np.uint32
+    
+    indices_np = np.frombuffer(decompressed, dtype=dtype)
+    return indices_np.tolist()
 
 def load_compressed(filename):
     """

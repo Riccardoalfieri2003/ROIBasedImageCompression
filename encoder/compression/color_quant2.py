@@ -4488,6 +4488,185 @@ def print_compressed_data_types(compressed_data, name="Compressed Data"):
     print(f"{'='*60}")
 
 
+"""
+def optimize_compressed_dtype(compressed_data):
+    if 'indices' not in compressed_data:
+        return compressed_data
+    
+    indices = compressed_data['indices']
+    
+    # Convert to numpy array if it's a list
+    if isinstance(indices, list):
+        indices_array = np.array(indices)
+    elif isinstance(indices, np.ndarray):
+        indices_array = indices.copy()
+    else:
+        print(f"Warning: Unknown indices type: {type(indices)}")
+        return compressed_data
+    
+    # Get current dtype info
+    current_dtype = indices_array.dtype
+    max_value = indices_array.max() if len(indices_array) > 0 else 0
+    
+    print(f"\n{'='*60}")
+    print(f"DTYPE OPTIMIZATION")
+    print(f"{'='*60}")
+    print(f"Current dtype: {current_dtype}")
+    print(f"Max index value: {max_value}")
+    
+    # Determine optimal dtype
+    if max_value < 256:
+        optimal_dtype = np.uint8
+        dtype_name = 'uint8'
+        bytes_per_index = 1
+    elif max_value < 65536:
+        optimal_dtype = np.uint16
+        dtype_name = 'uint16'
+        bytes_per_index = 2
+    else:
+        optimal_dtype = np.uint32
+        dtype_name = 'uint32'
+        bytes_per_index = 4
+    
+    # Calculate savings
+    current_bytes = indices_array.nbytes
+    if current_dtype == np.uint8:
+        current_bytes_per_index = 1
+    elif current_dtype == np.uint16:
+        current_bytes_per_index = 2
+    elif current_dtype == np.uint32:
+        current_bytes_per_index = 4
+    else:
+        current_bytes_per_index = 4  # Default assumption
+    
+    optimized_bytes = len(indices_array) * bytes_per_index
+    savings = current_bytes - optimized_bytes
+    
+    print(f"Optimal dtype: {dtype_name}")
+    print(f"Current size: {current_bytes:,} bytes ({current_bytes_per_index} bytes/index)")
+    print(f"Optimized size: {optimized_bytes:,} bytes ({bytes_per_index} bytes/index)")
+    print(f"Savings: {savings:,} bytes ({savings/current_bytes*100:.1f}% smaller)")
+    
+    # Only convert if there's a benefit
+    if optimal_dtype != current_dtype:
+        print(f"✅ Converting: {current_dtype} → {optimal_dtype}")
+        indices_optimized = indices_array.astype(optimal_dtype)
+        
+        # Update the compressed data
+        optimized_data = compressed_data.copy()
+        optimized_data['indices'] = indices_optimized.tolist()  # Or keep as array
+        optimized_data['indices_dtype'] = dtype_name
+        optimized_data['indices_optimized'] = True
+        
+        # Update palette count if available
+        if 'palette' in optimized_data:
+            actual_colors = len(optimized_data['palette'])
+            optimized_data['actual_colors'] = actual_colors
+            print(f"Palette size: {actual_colors} colors")
+        
+        return optimized_data
+    else:
+        print(f"✓ Already optimal dtype: {current_dtype}")
+        return compressed_data
+"""
+
+def optimize_compressed_dtype(compressed_data):
+    """
+    Downgrade uint32 indices to uint8 or uint16 when possible.
+    
+    Args:
+        compressed_data: Dictionary with 'indices' and 'palette'
+    
+    Returns:
+        Optimized dictionary with smallest dtype
+    """
+    if 'indices' not in compressed_data:
+        return compressed_data
+    
+    indices = compressed_data['indices']
+    
+    # Convert to numpy array if it's a list
+    if isinstance(indices, list):
+        indices_array = np.array(indices)
+    elif isinstance(indices, np.ndarray):
+        indices_array = indices.copy()
+    else:
+        print(f"Warning: Unknown indices type: {type(indices)}")
+        return compressed_data
+    
+    # Get current dtype info
+    current_dtype = indices_array.dtype
+    max_value = indices_array.max() if len(indices_array) > 0 else 0
+    
+    print(f"\n{'='*60}")
+    print(f"DTYPE OPTIMIZATION")
+    print(f"{'='*60}")
+    print(f"Current dtype: {current_dtype}")
+    print(f"Max index value: {max_value}")
+    
+    # Determine optimal dtype
+    if max_value < 256:
+        optimal_dtype = np.uint8
+        dtype_name = 'uint8'
+        bytes_per_index = 1
+    elif max_value < 65536:
+        optimal_dtype = np.uint16
+        dtype_name = 'uint16'
+        bytes_per_index = 2
+    else:
+        optimal_dtype = np.uint32
+        dtype_name = 'uint32'
+        bytes_per_index = 4
+    
+    # Calculate savings
+    current_bytes = indices_array.nbytes
+    if current_dtype == np.uint8:
+        current_bytes_per_index = 1
+    elif current_dtype == np.uint16:
+        current_bytes_per_index = 2
+    elif current_dtype == np.uint32:
+        current_bytes_per_index = 4
+    else:
+        current_bytes_per_index = 4  # Default assumption
+    
+    optimized_bytes = len(indices_array) * bytes_per_index
+    savings = current_bytes - optimized_bytes
+    
+    print(f"Optimal dtype: {dtype_name}")
+    print(f"Current size: {current_bytes:,} bytes ({current_bytes_per_index} bytes/index)")
+    print(f"Optimized size: {optimized_bytes:,} bytes ({bytes_per_index} bytes/index)")
+    print(f"Savings: {savings:,} bytes ({savings/current_bytes*100:.1f}% smaller)")
+    
+    # Only convert if there's a benefit
+    if optimal_dtype != current_dtype:
+        print(f"✅ Converting: {current_dtype} → {optimal_dtype}")
+        indices_optimized = indices_array.astype(optimal_dtype)
+        
+        # Update the compressed data
+        optimized_data = compressed_data.copy()
+        optimized_data['indices'] = indices_optimized.tolist()  # Or keep as array
+        optimized_data['indices_dtype'] = dtype_name
+        optimized_data['indices_optimized'] = True
+        
+        # Update palette count if available
+        if 'palette' in optimized_data:
+            actual_colors = len(optimized_data['palette'])
+            optimized_data['actual_colors'] = actual_colors
+            print(f"Palette size: {actual_colors} colors")
+        
+        return optimized_data
+    else:
+        print(f"✓ Already optimal dtype: {current_dtype}")
+        return compressed_data
+
+
+
+
+
+
+
+
+
 
 
 
@@ -4502,7 +4681,7 @@ def print_compressed_data_types(compressed_data, name="Compressed Data"):
 
 if __name__ == "__main__":
 
-    image_name = 'images/kauai.jpg'
+    image_name = 'images/Lenna.webp'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -5911,7 +6090,16 @@ if __name__ == "__main__":
         max_colors_per_cluster=max_colors_per_cluster
     )
 
-    image_components.append(nonROI_seg_compression)
+    # Print current types
+    print_compressed_data_types(image_seg_compression, "BEFORE OPTIMIZATION")
+
+    # Optimize dtype
+    image_seg_compression = optimize_compressed_dtype(image_seg_compression)
+
+    # Print optimized types
+    print_compressed_data_types(image_seg_compression, "AFTER OPTIMIZATION")
+
+
 
     
 
@@ -6016,12 +6204,12 @@ if __name__ == "__main__":
         print(f"Compressing: {w}x{h} image, {len(palette)} colors")
         
         # Compress
-        from encoder.compression.compression import lossless_compress, save_compressed
+        from encoder.compression.compression import lossless_compress_optimized, save_compressed
         
-        compressed_data = lossless_compress(palette, indices_matrix, shape)
+        compressed_data = lossless_compress_optimized(palette, indices_matrix, shape)
         
         # Save
-        filename = "compressed_komodo.hccq"
+        filename = "compressed_lenna.hccq"
         file_size = save_compressed(compressed_data, filename)
         
         # Stats

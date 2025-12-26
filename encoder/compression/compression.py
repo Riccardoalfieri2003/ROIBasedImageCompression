@@ -140,3 +140,81 @@ def save_compressed(compressed_data, filename):
         f.write(final_compressed)
     
     return len(final_compressed) + 8  # +8 for header
+
+
+
+
+
+
+
+
+def lossless_compress_optimized(palette, indices_list, shape, use_manual_rle=False):
+    """
+    Optimized compression with automatic dtype selection.
+    Handles both Python lists and numpy arrays.
+    """
+    # Compress palette
+    palette_compressed = compress_palette(palette)
+    
+    # Handle different input types
+    if isinstance(indices_list, np.ndarray):
+        # It's a numpy array
+        if indices_list.size == 0:
+            max_index = 0
+            indices_flat = indices_list.flatten()
+        else:
+            max_index = indices_list.max()
+            indices_flat = indices_list.flatten()
+    elif isinstance(indices_list, list):
+        # It's a Python list
+        if not indices_list:
+            max_index = 0
+            indices_flat = indices_list
+        else:
+            max_index = max(indices_list)
+            indices_flat = indices_list
+    else:
+        raise TypeError(f"indices_list must be list or numpy array, got {type(indices_list)}")
+    
+    # Determine optimal dtype for indices
+    if max_index < 256:
+        dtype = np.uint8
+        dtype_name = 'uint8'
+    elif max_index < 65536:
+        dtype = np.uint16
+        dtype_name = 'uint16'
+    else:
+        dtype = np.uint32
+        dtype_name = 'uint32'
+    
+    print(f"Indices optimization: max={max_index}, using {dtype_name}")
+    
+    indices_compressed = compress_indices_simple_optimized(indices_flat, dtype)
+    method = 'zlib_direct'
+    
+    return {
+        's': shape,
+        'ps': len(palette),
+        'p': palette_compressed,
+        'i': indices_compressed,
+        'idx_dtype': dtype_name,  # Store dtype for decompression
+        'method': method
+    }
+
+def compress_indices_simple_optimized(indices_data, dtype=np.uint8):
+    """
+    Use optimal dtype instead of always uint16.
+    Handles both lists and numpy arrays.
+    """
+    if isinstance(indices_data, np.ndarray):
+        # Already numpy array
+        if indices_data.dtype != dtype:
+            indices = indices_data.astype(dtype)
+        else:
+            indices = indices_data
+    else:
+        # Convert list to numpy array
+        indices = np.array(indices_data, dtype=dtype)
+    
+    raw_bytes = indices.tobytes()
+    return zlib.compress(raw_bytes, level=9)
