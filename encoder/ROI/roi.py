@@ -5,10 +5,10 @@ import numpy as np
 
 from encoder.ROI.edges import compute_local_density, suggest_automatic_threshold, get_edge_map
 from encoder.ROI.small_regions import remove_small_regions, connect_nearby_pixels
-from encoder.ROI.thin_regions import remove_thin_structures
+from encoder.ROI.thin_regions2 import remove_thin_structures_optimized
 from encoder.ROI.small_gaps import bridge_small_gaps
 
-
+import time
 
 
 def get_regions(image_rgb):
@@ -19,10 +19,11 @@ def get_regions(image_rgb):
 
 
     edge_map = get_edge_map(image_rgb)
+
     edge_density = compute_local_density(edge_map, kernel_size=3)
 
-
     threshold = suggest_automatic_threshold(edge_density, edge_map, method="mean") / 100
+
     
     window_size = math.floor(factor)
     min_region_size= math.ceil( image_rgb.size / math.pow(10, math.ceil(math.log(image_rgb.size, 10))-3 ) ) 
@@ -152,6 +153,7 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
     Complete pipeline: filter edges by density, then unify regions, remove small regions.
     Returns ROI and non-ROI separately.
     """
+    start_time = time.time()
     # Step 1: Get high-density borders (your existing approach)
     high_density_mask = edge_density > density_threshold
     intensity_borders = edge_map.copy()
@@ -159,11 +161,15 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
     
     # Convert to binary (0 and 255)
     binary_borders = (intensity_borders > 0).astype(np.uint8) * 255
-    
-    #binary_thin_bordersless=remove_thin_structures(binary_borders, density_threshold=0.10, thinness_threshold=0.3, window_size=25, min_region_size=25)
 
-    binary_thin_bordersless=binary_borders
+    print("Pre: %s seconds ---" % (time.time() - start_time))
+    
+    binary_thin_bordersless=remove_thin_structures_optimized(binary_borders, density_threshold=0.10, thinness_threshold=0.3, window_size=25, min_region_size=25)
+    
+    
+    start_time=time.time()
     noiseless_binary_borders=remove_small_noise_regions(binary_thin_bordersless, min_size=75)
+    print(f"noiseless_binary_borders: {time.time() - start_time:.3f} seconds")
 
     # Skeleton-based connection
     connected_1 = connect_nearby_pixels(

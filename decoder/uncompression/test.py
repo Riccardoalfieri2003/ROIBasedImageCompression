@@ -2,12 +2,38 @@ import cv2
 from decoder.uncompression.uncompression import lossless_decompress, load_compressed, decompress_color_quantization
 from decoder.uncompression.comparison import calculate_quality_metrics, create_difference_visualization, print_quality_report, plot_comparison, calculate_adaptive_quality_metrics, print_adaptive_metrics
 
+
+def apply_edge_preserving_blur(image, blur_strength=3, edge_preservation=10):
+    """
+    Bilateral filter - blurs while preserving edges.
+    Great for compression artifacts!
+    
+    Args:
+        blur_strength: d parameter (larger = more blur)
+        edge_preservation: sigmaColor (larger = more edge preservation)
+    """
+    # Convert to float32 for better precision
+    image_float = image.astype(np.float32) / 255.0
+    
+    # Apply bilateral filter
+    blurred = cv2.bilateralFilter(
+        image_float, 
+        d=blur_strength,
+        sigmaColor=edge_preservation/255.0,
+        sigmaSpace=edge_preservation
+    )
+    
+    # Convert back to uint8
+    return (blurred * 255).astype(np.uint8)
+
+
+
 if __name__ == "__main__":
     # Example data
 
     # Load images
-    original_path = 'images/waikiki.jpg'
-    reconstructed_path = 'compressed_komodo2.hccq'  # Your saved reconstruction
+    original_path = 'images/Hawaii.jpg'
+    reconstructed_path = 'compressed_hawaii.hccq'  # Your saved reconstruction
 
     # Load original image
     original_bgr = cv2.imread(original_path)
@@ -33,7 +59,8 @@ if __name__ == "__main__":
     import numpy as np
 
     # Assuming reconstructed is a numpy array with shape (h, w, 3)
-    reconstructed = cv2.GaussianBlur(reconstructed, (3, 3), 0)
+    #reconstructed = cv2.GaussianBlur(reconstructed, (3, 3), 0)
+    reconstructed = apply_edge_preserving_blur(reconstructed, blur_strength=20, edge_preservation=50)
 
     import matplotlib.pyplot as plt
     plt.title("reconstructed")
