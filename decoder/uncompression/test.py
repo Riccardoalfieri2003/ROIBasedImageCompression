@@ -6,8 +6,8 @@ if __name__ == "__main__":
     # Example data
 
     # Load images
-    original_path = 'images/Hawaii.jpg'
-    reconstructed_path = 'compressed_waikiki2.hccq'  # Your saved reconstruction
+    original_path = 'images/komodo.jpg'
+    reconstructed_path = 'compressed_komodo.hccq'  # Your saved reconstruction
 
     # Load original image
     original_bgr = cv2.imread(original_path)
@@ -37,7 +37,6 @@ if __name__ == "__main__":
     
     # Calculate metrics
     print("\nCalculating quality metrics...")
-    metrics = calculate_quality_metrics(original, reconstructed)
     metrics=calculate_adaptive_quality_metrics(original, reconstructed)
     
     # Create difference visualizations

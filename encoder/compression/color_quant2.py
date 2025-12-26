@@ -3728,11 +3728,9 @@ def cluster_palette_colors(compressed_data, eps=10.0, min_samples=2, max_colors_
     
     return new_compressed_data
 
+"""
 def split_large_cluster(cluster_colors, max_size):
-    """
-    Split a large cluster into smaller sub-clusters.
-    Uses simple K-means to split.
-    """
+
     from sklearn.cluster import KMeans
     
     n_splits = max(2, len(cluster_colors) // max_size + 1)
@@ -3747,7 +3745,90 @@ def split_large_cluster(cluster_colors, max_size):
             splits.append(cluster_colors[mask])
     
     return splits
+"""
 
+def split_large_cluster(cluster_colors, max_colors_per_cluster):
+    """
+    Split a large cluster into smaller sub-clusters.
+    Uses simple K-means to split.
+    
+    Args:
+        cluster_colors: Array of colors in the cluster [n_colors, 3]
+        max_colors_per_cluster: Maximum allowed colors per sub-cluster
+    
+    Returns:
+        List of sub-cluster arrays
+    """
+    n_colors = len(cluster_colors)
+    
+    # If cluster is already small enough, return it as single cluster
+    if n_colors <= max_colors_per_cluster:
+        return [cluster_colors]
+    
+    # Calculate how many sub-clusters we need
+    n_splits = max(2, (n_colors + max_colors_per_cluster - 1) // max_colors_per_cluster)
+    
+    # Ensure we don't ask for more clusters than colors
+    n_splits = min(n_splits, n_colors)
+    
+    # Special case: very small clusters
+    if n_colors <= 2 or n_splits < 2:
+        return [cluster_colors]
+    
+    try:
+        from sklearn.cluster import KMeans
+        
+        kmeans = KMeans(n_clusters=n_splits, random_state=42, n_init='auto')
+        labels = kmeans.fit_predict(cluster_colors.astype(float))
+        
+        splits = []
+        for i in range(n_splits):
+            mask = labels == i
+            if np.any(mask):
+                splits.append(cluster_colors[mask])
+        
+        # Double-check that all splits are within size limit
+        # If any split is still too large, recursively split it
+        final_splits = []
+        for split in splits:
+            if len(split) > max_colors_per_cluster:
+                final_splits.extend(split_large_cluster(split, max_colors_per_cluster))
+            else:
+                final_splits.append(split)
+        
+        return final_splits
+        
+    except Exception as e:
+        print(f"Warning: KMeans splitting failed: {e}")
+        print(f"  Cluster size: {n_colors}, Requested splits: {n_splits}")
+        # Fallback: Simple split by luminance
+        return split_by_luminance(cluster_colors, max_colors_per_cluster)
+
+
+def split_by_luminance(cluster_colors, max_colors_per_cluster):
+    """
+    Fallback splitting method: sort by luminance and split evenly
+    """
+    n_colors = len(cluster_colors)
+    
+    if n_colors <= max_colors_per_cluster:
+        return [cluster_colors]
+    
+    # Calculate luminance (Y = 0.299*R + 0.587*G + 0.114*B)
+    luminance = (0.299 * cluster_colors[:, 0] + 
+                 0.587 * cluster_colors[:, 1] + 
+                 0.114 * cluster_colors[:, 2])
+    
+    # Sort by luminance
+    sorted_indices = np.argsort(luminance)
+    sorted_colors = cluster_colors[sorted_indices]
+    
+    # Split into approximately equal parts
+    n_splits = max(2, (n_colors + max_colors_per_cluster - 1) // max_colors_per_cluster)
+    split_points = np.array_split(sorted_colors, n_splits)
+    
+    # Filter out empty splits
+    return [split for split in split_points if len(split) > 0]
 
 def find_color_index(palette, color):
     """Find the index of a color in the palette."""
@@ -4207,9 +4288,132 @@ def visualize_individual_roi(roi_component, roi_index=None):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+import math
+import numpy as np
+from sklearn.cluster import DBSCAN
+from scipy.spatial.distance import cdist
+
+def compute_clustering_params(n_colors, quality, color_space='rgb'):
+    """
+    Compute optimized DBSCAN parameters for color clustering
+    
+    Args:
+        n_colors: Number of distinct colors in palette
+        quality: 0-100 quality parameter
+        color_space: 'rgb' or 'lab' (LAB is perceptually uniform)
+    
+    Returns:
+        eps, min_samples, max_colors_per_cluster
+    """
+    # ==============================================
+    # 1. EPSILON (maximum distance within cluster)
+    # ==============================================
+    # Quality 0-100 maps to perceptual thresholds
+    # Higher quality = smaller epsilon (tighter clusters)
+    
+    if color_space == 'lab':
+        # LAB space: ΔE*ab perceptual distances
+        # ΔE < 1: Not perceptible
+        # ΔE 1-2: Perceptible by trained observers
+        # ΔE 2-10: Perceptible at glance
+        # ΔE > 10: Different colors
+        
+        # Map quality to ΔE threshold
+        min_eps = 2.0    # Quality 100 = JND threshold
+        max_eps = 20.0   # Quality 0 = very different colors
+        
+        # Exponential decay for better control
+        eps = max_eps * math.exp(-quality / 25.0) + min_eps
+        
+    else:  # RGB space
+        # RGB Euclidean distance (0-441.67 max)
+        # Quality 100: tight clusters (eps=5)
+        # Quality 0: loose clusters (eps=100)
+        min_eps = 5.0
+        max_eps = 100.0
+        
+        # Non-linear mapping for better control
+        eps = min_eps + (max_eps - min_eps) * ((100 - quality) / 100) ** 2
+    
+    # ==============================================
+    # 2. MIN_SAMPLES (minimum points to form cluster)
+    # ==============================================
+    # Higher quality = more strict clustering (require more samples)
+    if n_colors < 10:
+        min_samples = 1
+    elif n_colors < 100:
+        # Scale with number of colors
+        min_samples = max(1, int(2 * quality / 100))
+    else:
+        # For large palettes, be more selective
+        min_samples = max(2, int(3 * quality / 100))
+    
+    # ==============================================
+    # 3. MAX COLORS PER CLUSTER (compression factor)
+    # ==============================================
+    # Higher quality = preserve more colors (smaller clusters)
+    # Lower quality = merge more colors (larger clusters)
+    
+    # Base compression ratio target based on quality
+    target_compression_ratio = 1.0 + (100 - quality) / 25.0
+    # quality=100 → ratio=1.0 (no merging)
+    # quality=75 → ratio=2.0 (merge 2:1)
+    # quality=50 → ratio=3.0 (merge 3:1)
+    # quality=25 → ratio=4.0 (merge 4:1)
+    # quality=0 → ratio=5.0 (merge 5:1)
+    
+    # Adjust based on palette size
+    if n_colors < 50:
+        # Small palettes: be conservative
+        max_colors_per_cluster = int(target_compression_ratio * 1.5)
+    elif n_colors < 200:
+        # Medium palettes: normal merging
+        max_colors_per_cluster = int(target_compression_ratio)
+    else:
+        # Large palettes: can be more aggressive
+        max_colors_per_cluster = int(target_compression_ratio * 0.8)
+    
+    # Ensure reasonable bounds
+    max_colors_per_cluster = max(1, min(10, max_colors_per_cluster))
+    
+    # ==============================================
+    # 4. ADAPTIVE EPSILON BASED ON LOCAL DENSITY
+    # ==============================================
+    # Option: Compute k-distance to determine eps automatically
+    # eps = compute_k_distance(colors, k=min_samples)
+    
+    return eps, min_samples, max_colors_per_cluster
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 if __name__ == "__main__":
 
-    image_name = 'images/Hawaii.jpg'
+    image_name = 'images/Komodo.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -4260,7 +4464,6 @@ if __name__ == "__main__":
 
 
     # 🆕 COMPRESS EACH SLIC SEGMENT INDIVIDUALLY
-    print("  Applying DCT compression to SLIC segments...")
     all_segments_compressed = []
     total_segments_original = 0
     total_segments_compressed = 0
@@ -4425,9 +4628,10 @@ if __name__ == "__main__":
                 (top_left_abs_row, top_left_abs_col)
             )
 
-            quality=25
+            quality=1
             n_colors = seg_compression['actual_colors']
 
+            """
             distance= 256 - (256*quality / 100)
             eps=math.pow(100/quality,3)
 
@@ -4435,6 +4639,17 @@ if __name__ == "__main__":
             max_sample_pre=math.pow(n_colors, coefficient_max_samples )
             #max_colors_per_cluster=math.ceil( math.pow(math.e,max_sample_pre) * 3*100/quality  )
             max_colors_per_cluster=math.ceil(max_sample_pre * 3*100/quality  )
+            """
+
+            palette_colors = np.array(seg_compression['palette'])
+            
+            # Option A: Simple improved formulas
+            eps, min_samples, max_colors_per_cluster = compute_clustering_params(
+                n_colors, quality, color_space='lab'
+            )
+
+            max_colors_per_cluster*=10
+            eps*=10
 
             # Then cluster the colors
             seg_compression = cluster_palette_colors(
@@ -4446,7 +4661,7 @@ if __name__ == "__main__":
 
             print(f"Eps: {eps}")
             print(f"n_colors: {n_colors}")
-            print(f"max_sample_pre: {max_sample_pre}")
+            #print(f"max_sample_pre: {max_sample_pre}")
             print(f"max_colors_per_cluster: {max_colors_per_cluster}")
 
             
@@ -4891,9 +5106,9 @@ if __name__ == "__main__":
                 (top_left_abs_row, top_left_abs_col)
             )
 
-            quality=5
-            n_colors = seg_compression['actual_colors']
+            quality=1
 
+            """
             distance= 256 - (256*quality / 100)
             eps=math.pow(100/quality,3)
 
@@ -4901,6 +5116,18 @@ if __name__ == "__main__":
             max_sample_pre=math.pow(n_colors, coefficient_max_samples )
             #max_colors_per_cluster=math.ceil( math.pow(math.e,max_sample_pre) * 3*100/quality  )
             max_colors_per_cluster=math.ceil(max_sample_pre * 3*100/quality  )
+            """
+
+            n_colors = seg_compression['actual_colors']
+            palette_colors = np.array(seg_compression['palette'])
+            
+            # Option A: Simple improved formulas
+            eps, min_samples, max_colors_per_cluster = compute_clustering_params(
+                n_colors, quality, color_space='lab'
+            )
+
+            max_colors_per_cluster*=10
+            eps*=10
 
             # Then cluster the colors
             seg_compression = cluster_palette_colors(
@@ -4912,7 +5139,7 @@ if __name__ == "__main__":
 
             print(f"Eps: {eps}")
             print(f"n_colors: {n_colors}")
-            print(f"max_sample_pre: {max_sample_pre}")
+            #print(f"max_sample_pre: {max_sample_pre}")
             print(f"max_colors_per_cluster: {max_colors_per_cluster}")
 
             
@@ -5253,8 +5480,7 @@ if __name__ == "__main__":
 
 
 
-
-
+    
 
 
 
@@ -5299,12 +5525,14 @@ if __name__ == "__main__":
         roi_bbox=image_bbox
     )
 
+
     # Extract the merged segment dictionary
     merged_segment = roi_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=50
+    quality=5
     n_colors = merged_segment['actual_colors']
 
+    """
     distance= 256 - (256*quality / 100)
     eps=math.pow(100/quality,3)
 
@@ -5312,6 +5540,18 @@ if __name__ == "__main__":
     max_sample_pre=math.pow(n_colors, coefficient_max_samples )
     #max_colors_per_cluster=math.ceil( math.pow(math.e,max_sample_pre) * 3*100/quality  )
     max_colors_per_cluster=math.ceil(max_sample_pre * 3*100/quality  )
+    """
+
+    n_colors = merged_segment['actual_colors']
+    palette_colors = np.array(merged_segment['palette'])
+    
+    # Option A: Simple improved formulas
+    eps, min_samples, max_colors_per_cluster = compute_clustering_params(
+        n_colors, quality, color_space='lab'
+    )
+
+    max_colors_per_cluster*=10
+    eps*=10
 
     # ==============================================
     # OPTION 1: If you want to cluster the merged palette
@@ -5423,9 +5663,10 @@ if __name__ == "__main__":
     # Extract the merged segment dictionary
     merged_segment = nonroi_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=35
+    quality=5
     n_colors = merged_segment['actual_colors']
 
+    """
     distance= 256 - (256*quality / 100)
     eps=math.pow(100/quality,3)
 
@@ -5433,6 +5674,18 @@ if __name__ == "__main__":
     max_sample_pre=math.pow(n_colors, coefficient_max_samples )
     #max_colors_per_cluster=math.ceil( math.pow(math.e,max_sample_pre) * 3*100/quality  )
     max_colors_per_cluster=math.ceil(max_sample_pre * 3*100/quality  )
+    """
+
+    n_colors = merged_segment['actual_colors']
+    palette_colors = np.array(merged_segment['palette'])
+    
+    # Option A: Simple improved formulas
+    eps, min_samples, max_colors_per_cluster = compute_clustering_params(
+        n_colors, quality, color_space='lab'
+    )
+    eps*=10
+
+    max_colors_per_cluster*=10
 
     # ==============================================
     # OPTION 1: If you want to cluster the merged palette
@@ -5544,9 +5797,10 @@ if __name__ == "__main__":
     # Extract the merged segment dictionary
     merged_segment = regions_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=75
+    quality=15
     n_colors = merged_segment['actual_colors']
 
+    """
     distance= 256 - (256*quality / 100)
     eps=math.pow(100/quality,3)
 
@@ -5554,6 +5808,18 @@ if __name__ == "__main__":
     max_sample_pre=math.pow(n_colors, coefficient_max_samples )
     #max_colors_per_cluster=math.ceil( math.pow(math.e,max_sample_pre) * 3*100/quality  )
     max_colors_per_cluster=math.ceil(max_sample_pre * 3*100/quality  )
+    """
+
+    n_colors = merged_segment['actual_colors']
+    palette_colors = np.array(merged_segment['palette'])
+    
+    # Option A: Simple improved formulas
+    eps, min_samples, max_colors_per_cluster = compute_clustering_params(
+        n_colors, quality, color_space='lab'
+    )
+    eps*=10
+
+    max_colors_per_cluster*=10
 
     # ==============================================
     # OPTION 1: If you want to cluster the merged palette
@@ -5641,7 +5907,7 @@ if __name__ == "__main__":
 
         # Convert numpy array to PIL Image and save
         pil_image = Image.fromarray(reconstructed_image)
-        pil_image.save('reconstructed_image.jpg', quality=95)  # quality 1-100
+        pil_image.save('reconstructed_image.jpg', quality=25)  # quality 1-100
 
         print(f"✅ Image saved as 'reconstructed_image.jpg'")
         print(f"   Size: {reconstructed_image.shape[1]}x{reconstructed_image.shape[0]}")
@@ -5677,7 +5943,7 @@ if __name__ == "__main__":
         compressed_data = lossless_compress(palette, indices_matrix, shape)
         
         # Save
-        filename = "compressed_waikiki2.hccq"
+        filename = "compressed_komodo.hccq"
         file_size = save_compressed(compressed_data, filename)
         
         # Stats
