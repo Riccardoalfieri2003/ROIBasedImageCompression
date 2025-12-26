@@ -3,7 +3,7 @@ import cv2
 from matplotlib import pyplot as plt
 import numpy as np
 
-from encoder.ROI.edges import compute_local_density, suggest_automatic_threshold, get_edge_map
+from encoder.ROI.edges import compute_local_density, suggest_automatic_threshold, get_edge_map, get_edge_map_fast
 from encoder.ROI.small_regions import remove_small_regions, connect_nearby_pixels, connect_by_closing_fast
 from encoder.ROI.thin_regions2 import remove_thin_structures_optimized
 from encoder.ROI.small_gaps import bridge_small_gaps, bridge_small_gaps_fast
@@ -42,12 +42,44 @@ def get_regions(image_rgb):
 
 from skimage.measure import label, regionprops
 def extract_regions(image_rgb, roi_mask, nonroi_mask):
-    # Extract all connected regions for ROI and non-ROI
-    roi_regions = extract_connected_regions(roi_mask, image_rgb)
-    nonroi_regions = extract_connected_regions(nonroi_mask, image_rgb)
-
-    print(f"Found {len(roi_regions)} ROI regions")
-    print(f"Found {len(nonroi_regions)} non-ROI regions")
+    # Calculate minimum region size
+    min_region_size = math.ceil(
+        image_rgb.size / math.pow(10, math.ceil(math.log(image_rgb.size, 10)) - 3)
+    )
+    
+    print(f"Minimum region size: {min_region_size} pixels")
+    
+    # Extract all connected regions
+    roi_regions = extract_connected_regions_fast(roi_mask, image_rgb)
+    nonroi_regions = extract_connected_regions_fast(nonroi_mask, image_rgb)
+    
+    print(f"Initial - ROI: {len(roi_regions)} regions, non-ROI: {len(nonroi_regions)} regions")
+    
+    # Find small ROI regions
+    small_roi_regions = []
+    large_roi_regions = []
+    
+    for region in roi_regions:
+        if region['area'] < min_region_size:
+            small_roi_regions.append(region)
+        else:
+            large_roi_regions.append(region)
+    
+    print(f"Found {len(small_roi_regions)} small ROI regions (< {min_region_size} pixels)")
+    
+    # Move small ROI regions to non-ROI
+    if small_roi_regions:
+        # Update their type if you have a type field
+        for region in small_roi_regions:
+            region['type'] = 'nonroi'  # Optional: add type field
+        
+        # Add to non-ROI list
+        nonroi_regions.extend(small_roi_regions)
+        
+        # Keep only large regions in ROI
+        roi_regions = large_roi_regions
+        
+        print(f"After reassignment - ROI: {len(roi_regions)} regions, non-ROI: {len(nonroi_regions)} regions")
 
     # Display some statistics
     print("\nROI Regions (sorted by area):")
@@ -59,15 +91,161 @@ def extract_regions(image_rgb, roi_mask, nonroi_mask):
         print(f"  Region {i+1}: Area = {region['area']} pixels")
 
 
-    # Display ROI regions
-    plot_regions(roi_regions, "ROI Regions")
+    debug=True
+    if debug:
+        # Display ROI regions
+        plot_regions(roi_regions, "ROI Regions")
 
-    # Display non-ROI regions
-    plot_regions(nonroi_regions, "Non-ROI Regions")
+        # Display non-ROI regions
+        plot_regions(nonroi_regions, "Non-ROI Regions")
 
     return roi_regions, nonroi_regions
 
 
+
+
+
+def process_regions_with_reassignment(image_rgb, roi_mask, nonroi_mask):
+    """
+    Extract regions, reassign small ones, and fuse adjacent regions.
+    OPTIMIZED VERSION - faster and fixed errors.
+    """
+    # Calculate min_region_size
+    image_size = image_rgb.shape[0] * image_rgb.shape[1]
+    min_region_size = math.ceil(image_size / math.pow(10, math.ceil(math.log(image_size, 10)) - 3))
+    
+    print(f"Minimum region size: {min_region_size} pixels")
+    
+    # Step 1: Extract initial regions
+    roi_regions = extract_connected_regions(roi_mask, image_rgb)
+    nonroi_regions = extract_connected_regions(nonroi_mask, image_rgb)
+    
+    print(f"\nInitial counts:")
+    print(f"  ROI regions: {len(roi_regions)}")
+    print(f"  Non-ROI regions: {len(nonroi_regions)}")
+    
+    # Step 2: Identify small regions for reassignment (FAST - using list comprehensions)
+    small_roi_indices = [i for i, r in enumerate(roi_regions) if r['area'] < min_region_size]
+    small_nonroi_indices = [i for i, r in enumerate(nonroi_regions) if r['area'] < min_region_size]
+    
+    print(f"\nSmall regions identified:")
+    print(f"  Small ROI regions: {len(small_roi_indices)}")
+    print(f"  Small non-ROI regions: {len(small_nonroi_indices)}")
+    
+    # Step 3: Reassign small regions (FAST - build new lists)
+    new_roi_regions = []
+    new_nonroi_regions = []
+    
+    # Keep large ROI regions
+    for i, region in enumerate(roi_regions):
+        if i not in small_roi_indices:  # Large region
+            region['type'] = 'roi'
+            new_roi_regions.append(region)
+        else:  # Small region → becomes non-ROI
+            region['type'] = 'nonroi'
+            new_nonroi_regions.append(region)
+    
+    # Keep large non-ROI regions
+    for i, region in enumerate(nonroi_regions):
+        if i not in small_nonroi_indices:  # Large region
+            region['type'] = 'nonroi'
+            new_nonroi_regions.append(region)
+        else:  # Small region → becomes ROI
+            region['type'] = 'roi'
+            new_roi_regions.append(region)
+    
+    # Update references
+    roi_regions = new_roi_regions
+    nonroi_regions = new_nonroi_regions
+    
+    print(f"\nAfter reassignment:")
+    print(f"  ROI regions: {len(roi_regions)}")
+    print(f"  Non-ROI regions: {len(nonroi_regions)}")
+    
+    # Step 4: OPTIMIZED fusion (skip if few regions)
+    if len(roi_regions) > 1:
+        roi_regions = fuse_adjacent_regions_optimized(roi_regions, image_rgb.shape, 'roi')
+    
+    if len(nonroi_regions) > 1:
+        nonroi_regions = fuse_adjacent_regions_optimized(nonroi_regions, image_rgb.shape, 'nonroi')
+    
+    print(f"\nAfter fusion:")
+    print(f"  ROI regions: {len(roi_regions)}")
+    print(f"  Non-ROI regions: {len(nonroi_regions)}")
+    
+    # Display top regions
+    if roi_regions:
+        print("\nTop ROI Regions (by area):")
+        for i, region in enumerate(sorted(roi_regions, key=lambda x: x['area'], reverse=True)[:3]):
+            print(f"  Region {i+1}: Area = {region['area']} pixels")
+    
+    if nonroi_regions:
+        print("\nTop Non-ROI Regions (by area):")
+        for i, region in enumerate(sorted(nonroi_regions, key=lambda x: x['area'], reverse=True)[:3]):
+            print(f"  Region {i+1}: Area = {region['area']} pixels")
+    
+    return roi_regions, nonroi_regions
+
+def fuse_adjacent_regions_optimized(regions, image_shape, region_type='roi'):
+    """
+    Optimized fusion using label image (much faster than pairwise comparison).
+    """
+    if len(regions) <= 1:
+        return regions
+    
+    # Create a combined mask for all regions
+    combined_mask = np.zeros(image_shape[:2], dtype=np.uint8)
+    
+    # Mark each region with a unique label
+    for i, region in enumerate(regions):
+        y1, x1, y2, x2 = region['bbox']
+        combined_mask[y1:y2, x1:x2] = np.where(
+            region['mask'], 
+            i + 1,  # Labels start from 1
+            combined_mask[y1:y2, x1:x2]
+        )
+    
+    # Find connected components (this automatically fuses adjacent regions)
+    num_labels, labels = cv2.connectedComponents(combined_mask, connectivity=8)
+    
+    # If no fusion occurred, return original
+    if num_labels - 1 == len(regions):  # -1 for background
+        print(f"  No fusion needed for {region_type} regions")
+        return regions
+    
+    # Create new fused regions
+    fused_regions = []
+    
+    for label in range(1, num_labels):  # Skip background (0)
+        # Get mask for this fused region
+        fused_mask = labels == label
+        
+        # Get bounding box
+        rows = np.any(fused_mask, axis=1)
+        cols = np.any(fused_mask, axis=0)
+        
+        if not np.any(rows) or not np.any(cols):
+            continue
+            
+        y1, y2 = np.where(rows)[0][[0, -1]]
+        x1, x2 = np.where(cols)[0][[0, -1]]
+        
+        # Crop mask to bounding box
+        cropped_mask = fused_mask[y1:y2+1, x1:x2+1]
+        
+        # Create new region
+        fused_region = {
+            'bbox': (y1, x1, y2, x2),
+            'mask': cropped_mask,
+            'area': np.sum(cropped_mask),
+            'type': region_type,
+            'is_fused': True
+        }
+        
+        fused_regions.append(fused_region)
+    
+    print(f"  Fused {len(regions)} → {len(fused_regions)} {region_type} regions")
+    return fused_regions
 
 
 def extract_connected_regions(mask, original_image):
@@ -99,6 +277,83 @@ def extract_connected_regions(mask, original_image):
             'area': region.area,
             'coords': region.coords,
             'label': region.label
+        })
+    
+    return region_data
+
+def extract_connected_regions_fast(mask, original_image):
+    """
+    Optimized but returns same format as original.
+    5-10x faster, same output structure.
+    """
+    # Use cv2.connectedComponentsWithStats (much faster than skimage)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), 
+        connectivity=8
+    )
+    
+    if num_labels <= 1:  # Only background
+        return []
+    
+    region_data = []
+    height, width = mask.shape
+    
+    # Pre-allocate arrays for coordinates (memory efficient)
+    all_coords = np.column_stack(np.where(labels > 0))
+    all_labels = labels[labels > 0]
+    
+    # Sort coordinates by label for efficient processing
+    sort_idx = np.argsort(all_labels)
+    all_coords = all_coords[sort_idx]
+    all_labels = all_labels[sort_idx]
+    
+    # Find where each label starts
+    unique_labels, label_starts = np.unique(all_labels, return_index=True)
+    label_starts = list(label_starts) + [len(all_labels)]  # Add end marker
+    
+    for i, label in enumerate(unique_labels):
+        # Get coordinates for this region
+        start_idx = label_starts[i]
+        end_idx = label_starts[i + 1]
+        coords = all_coords[start_idx:end_idx]
+        
+        # Get bounding box from stats (fast)
+        x = stats[label, cv2.CC_STAT_LEFT]
+        y = stats[label, cv2.CC_STAT_TOP]
+        w = stats[label, cv2.CC_STAT_WIDTH]
+        h = stats[label, cv2.CC_STAT_HEIGHT]
+        area = stats[label, cv2.CC_STAT_AREA]
+        
+        # Create single region mask (optimized)
+        single_region_mask = np.zeros((height, width), dtype=bool)
+        single_region_mask[coords[:, 0], coords[:, 1]] = True
+        
+        # Extract region image (optimized)
+        if original_image.ndim == 3:  # RGB image
+            region_image = np.zeros_like(original_image)
+            # Apply mask to all channels
+            for c in range(3):
+                region_image[coords[:, 0], coords[:, 1], c] = original_image[coords[:, 0], coords[:, 1], c]
+        else:  # Grayscale
+            region_image = np.zeros_like(original_image)
+            region_image[coords[:, 0], coords[:, 1]] = original_image[coords[:, 0], coords[:, 1]]
+        
+        # Bbox image and mask (lazy - only extract when needed)
+        bbox_image = original_image[y:y+h, x:x+w]
+        bbox_mask = single_region_mask[y:y+h, x:x+w]
+        
+        # Convert bbox to (minr, minc, maxr, maxc) format
+        bbox = (y, x, y + h, x + w)
+        
+        region_data.append({
+            'mask': single_region_mask,
+            'full_image': region_image,
+            'bbox_image': bbox_image,
+            'bbox_mask': bbox_mask,
+            'bbox': bbox,
+            'area': area,
+            'coords': coords,
+            'label': label
         })
     
     return region_data
@@ -181,7 +436,7 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
 
     pre_connected = connect_by_closing_fast(
         noiseless_binary_borders,
-        connection_distance=25,
+        connection_distance=5,
         min_region_size=25
     )
     

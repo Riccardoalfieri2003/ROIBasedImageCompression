@@ -1,7 +1,7 @@
 import cv2
 import math
 
-from encoder.ROI.roi import get_regions, extract_regions
+from encoder.ROI.roi import get_regions, extract_regions, process_regions_with_reassignment
 
 if __name__ == "__main__":
 
