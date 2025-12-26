@@ -6,7 +6,7 @@ if __name__ == "__main__":
     # Example data
 
     # Load images
-    original_path = 'images/komodo.jpg'
+    original_path = 'images/Lenna.webp'
     reconstructed_path = 'compressed_komodo.hccq'  # Your saved reconstruction
 
     # Load original image

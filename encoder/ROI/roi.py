@@ -160,7 +160,9 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
     # Convert to binary (0 and 255)
     binary_borders = (intensity_borders > 0).astype(np.uint8) * 255
     
-    binary_thin_bordersless=remove_thin_structures(binary_borders, density_threshold=0.10, thinness_threshold=0.3, window_size=25, min_region_size=25)
+    #binary_thin_bordersless=remove_thin_structures(binary_borders, density_threshold=0.10, thinness_threshold=0.3, window_size=25, min_region_size=25)
+
+    binary_thin_bordersless=binary_borders
     noiseless_binary_borders=remove_small_noise_regions(binary_thin_bordersless, min_size=75)
 
     # Skeleton-based connection

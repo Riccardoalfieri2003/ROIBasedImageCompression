@@ -2870,26 +2870,15 @@ def merge_region_components_simple(region_components, roi_bbox):
     """
     Merge region components by placing them on ROI canvas.
     Colored pixels override black pixels.
-    
-    Args:
-        region_components: List of compressed segments from same ROI
-        roi_bbox: (minr, minc, maxr, maxc) of ROI in original image
-    
-    Returns:
-        List of merged segments (ideally 1 segment)
     """
     if not region_components:
         return []
     
     if len(region_components) == 1:
         # For single segment, ensure it has the 'actual_colors' key
-        single_seg = region_components[0].copy()  # Make a copy to avoid modifying original
+        single_seg = region_components[0].copy()
         if 'actual_colors' not in single_seg:
-            # Add the 'actual_colors' key if missing
-            if 'palette' in single_seg:
-                single_seg['actual_colors'] = len(single_seg['palette'])
-            else:
-                single_seg['actual_colors'] = 0
+            single_seg['actual_colors'] = len(single_seg.get('palette', []))
         return [single_seg]
     
     print(f"\n{'='*60}")
@@ -2903,8 +2892,8 @@ def merge_region_components_simple(region_components, roi_bbox):
     # ==============================================
     # 1. CREATE EMPTY CANVAS FOR ROI
     # ==============================================
-    # Start with all pixels as black (index 0)
-    roi_indices = np.zeros((roi_height, roi_width), dtype=np.uint16)
+    # Use uint32 to support up to ~4 billion colors (more than enough)
+    roi_indices = np.zeros((roi_height, roi_width), dtype=np.uint32)
     
     # Collect all colors from all segments
     all_colors = []
@@ -2921,45 +2910,34 @@ def merge_region_components_simple(region_components, roi_bbox):
     # ==============================================
     # 2. PLACE ALL SEGMENTS (last segment wins)
     # ==============================================
-    # Process in reverse so last segments have priority
     for seg_idx, seg in enumerate(reversed(region_components)):
-        seg_top_left = seg['top_left']  # Absolute coordinates
+        seg_top_left = seg['top_left']
         seg_shape = seg['shape']
-        seg_palette = seg['palette']  # List of [R, G, B] colors
+        seg_palette = seg['palette']
         seg_indices = np.array(seg['indices']).reshape(seg_shape)
         
-        # Calculate position relative to ROI
         rel_row = seg_top_left[0] - minr
         rel_col = seg_top_left[1] - minc
         
         colored_placed = 0
         
-        # Place segment on ROI canvas
+        # Vectorized placement for better performance
         for r in range(seg_shape[0]):
             for c in range(seg_shape[1]):
                 roi_r = rel_row + r
                 roi_c = rel_col + c
                 
-                # Check bounds
                 if 0 <= roi_r < roi_height and 0 <= roi_c < roi_width:
                     seg_pixel_idx = seg_indices[r, c]
                     
-                    # Get the actual color from segment's palette
                     if seg_pixel_idx < len(seg_palette):
                         color_tuple = tuple(seg_palette[seg_pixel_idx])
                         
-                        # Check if this pixel is black
-                        is_black = (color_tuple == black_color)
-                        
-                        if not is_black:
-                            # This is a colored pixel
-                            
-                            # Map color to combined palette
+                        if color_tuple != black_color:
                             if color_tuple not in color_to_index:
                                 color_to_index[color_tuple] = len(all_colors)
                                 all_colors.append(color_tuple)
                             
-                            # Always place colored pixel (overwrites whatever was there)
                             roi_indices[roi_r, roi_c] = color_to_index[color_tuple]
                             colored_placed += 1
         
@@ -2968,8 +2946,7 @@ def merge_region_components_simple(region_components, roi_bbox):
     # ==============================================
     # 3. CREATE MERGED SEGMENT
     # ==============================================
-    # Count statistics
-    black_pixels = np.sum(roi_indices == 0)  # Index 0 is black
+    black_pixels = np.sum(roi_indices == 0)
     colored_pixels_total = roi_height * roi_width - black_pixels
     
     print(f"\nMerging complete:")
@@ -2978,19 +2955,29 @@ def merge_region_components_simple(region_components, roi_bbox):
     print(f"  Colored pixels: {colored_pixels_total:,}")
     print(f"  Unique colors: {len(all_colors)}")
     
-    # Create the merged segment
+    # Check if we can use smaller dtype for indices
+    if len(all_colors) <= 256:
+        indices_dtype = np.uint8
+    elif len(all_colors) <= 65536:
+        indices_dtype = np.uint16
+    else:
+        indices_dtype = np.uint32
+    
+    # Convert indices to appropriate dtype
+    indices_converted = roi_indices.astype(indices_dtype)
+    
     merged_segment = {
         'top_left': (minr, minc),
         'shape': (roi_height, roi_width),
         'palette': all_colors,
-        'indices': roi_indices.flatten().tolist(),
+        'indices': indices_converted.flatten().tolist(),
+        'indices_dtype': str(indices_dtype),
         'method': 'merged',
         'actual_colors': len(all_colors),
         'encoding': 'roi_merged'
     }
     
     return [merged_segment]
-
 
 def visualize_merged_result(merged_segments, roi_shape, offset_r, offset_c, original_components=None):
     """
@@ -4322,6 +4309,7 @@ def compute_clustering_params(n_colors, quality, color_space='rgb'):
     # Quality 0-100 maps to perceptual thresholds
     # Higher quality = smaller epsilon (tighter clusters)
     
+    """
     if color_space == 'lab':
         # LAB space: ΔE*ab perceptual distances
         # ΔE < 1: Not perceptible
@@ -4392,11 +4380,112 @@ def compute_clustering_params(n_colors, quality, color_space='rgb'):
     # ==============================================
     # Option: Compute k-distance to determine eps automatically
     # eps = compute_k_distance(colors, k=min_samples)
+
+    """
+
+    #eps=256*100/(quality*2)
+    eps=128 - 1.28 * quality
+    #max_colors_per_cluster=math.ceil(n_colors*100/quality)
+    max_colors_per_cluster= math.ceil( ( -(quality / 100) * n_colors + n_colors) / quality )
+
+    if eps==0: eps=1
+    if max_colors_per_cluster==0: max_colors_per_cluster=1
+    min_samples=1
     
     return eps, min_samples, max_colors_per_cluster
 
 
-
+def print_compressed_data_types(compressed_data, name="Compressed Data"):
+    """
+    Print detailed type information about compressed data
+    """
+    print(f"\n{'='*60}")
+    print(f"DATA TYPE ANALYSIS: {name}")
+    print(f"{'='*60}")
+    
+    if not isinstance(compressed_data, dict):
+        print(f"ERROR: Expected dict, got {type(compressed_data)}")
+        return
+    
+    for key, value in compressed_data.items():
+        # Handle special cases
+        if key == 'palette':
+            if isinstance(value, list):
+                print(f"{key:20}: list of {len(value)} colors")
+                if value:
+                    first_color = value[0]
+                    print(f"  First color type: {type(first_color)}, length: {len(first_color)}")
+                    print(f"  Color values: {first_color[:3]}...")
+            elif isinstance(value, np.ndarray):
+                print(f"{key:20}: numpy array {value.shape}, dtype={value.dtype}")
+            else:
+                print(f"{key:20}: {type(value)}")
+        
+        elif key == 'indices':
+            if isinstance(value, list):
+                print(f"{key:20}: list of {len(value)} indices")
+                if value:
+                    max_val = max(value)
+                    min_val = min(value)
+                    print(f"  Value range: {min_val} to {max_val}")
+                    
+                    # Determine optimal dtype
+                    if max_val < 256:
+                        optimal_dtype = 'uint8'
+                    elif max_val < 65536:
+                        optimal_dtype = 'uint16'
+                    else:
+                        optimal_dtype = 'uint32'
+                    print(f"  Optimal dtype: {optimal_dtype}")
+                    
+                    # Estimate memory usage
+                    list_bytes = len(value) * 28  # Approx bytes per Python int
+                    optimal_bytes = len(value) * (1 if optimal_dtype == 'uint8' else 2 if optimal_dtype == 'uint16' else 4)
+                    print(f"  Memory: {list_bytes:,}B (list) → {optimal_bytes:,}B ({optimal_dtype})")
+                    
+            elif isinstance(value, np.ndarray):
+                print(f"{key:20}: numpy array {value.shape}, dtype={value.dtype}")
+                print(f"  Value range: {value.min()} to {value.max()}")
+                
+                # Check if can be downgraded
+                max_val = value.max()
+                if max_val < 256 and value.dtype != np.uint8:
+                    print(f"  ⚠️  Can be downgraded: {value.dtype} → uint8")
+                elif max_val < 65536 and value.dtype not in [np.uint16, np.uint8]:
+                    print(f"  ⚠️  Can be downgraded: {value.dtype} → uint16")
+            else:
+                print(f"{key:20}: {type(value)}")
+        
+        else:
+            # For other keys
+            if isinstance(value, (list, tuple)):
+                print(f"{key:20}: {type(value).__name__} of {len(value)} items")
+            elif isinstance(value, np.ndarray):
+                print(f"{key:20}: numpy array {value.shape}, dtype={value.dtype}")
+            else:
+                print(f"{key:20}: {type(value).__name__}: {repr(value)[:50]}...")
+    
+    # Calculate total estimated size
+    print(f"\n{'='*60}")
+    print("MEMORY ESTIMATE:")
+    total_size = 0
+    
+    for key, value in compressed_data.items():
+        if key == 'indices' and isinstance(value, list):
+            total_size += len(value) * 28  # Approx 28 bytes per Python int
+        elif key == 'indices' and isinstance(value, np.ndarray):
+            total_size += value.nbytes
+        elif key == 'palette' and isinstance(value, list):
+            total_size += len(value) * 3  # 3 bytes per RGB color
+        elif key == 'palette' and isinstance(value, np.ndarray):
+            total_size += value.nbytes
+        elif isinstance(value, str):
+            total_size += len(value)
+        elif isinstance(value, (int, float)):
+            total_size += 28  # Approx for Python numbers
+    
+    print(f"Total estimated size: {total_size:,} bytes")
+    print(f"{'='*60}")
 
 
 
@@ -4413,7 +4502,7 @@ def compute_clustering_params(n_colors, quality, color_space='rgb'):
 
 if __name__ == "__main__":
 
-    image_name = 'images/Komodo.jpg'
+    image_name = 'images/kauai.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -4628,7 +4717,7 @@ if __name__ == "__main__":
                 (top_left_abs_row, top_left_abs_col)
             )
 
-            quality=1
+            quality=10
             n_colors = seg_compression['actual_colors']
 
             """
@@ -4648,8 +4737,7 @@ if __name__ == "__main__":
                 n_colors, quality, color_space='lab'
             )
 
-            max_colors_per_cluster*=10
-            eps*=10
+            
 
             # Then cluster the colors
             seg_compression = cluster_palette_colors(
@@ -5106,7 +5194,7 @@ if __name__ == "__main__":
                 (top_left_abs_row, top_left_abs_col)
             )
 
-            quality=1
+            quality=5
 
             """
             distance= 256 - (256*quality / 100)
@@ -5126,8 +5214,6 @@ if __name__ == "__main__":
                 n_colors, quality, color_space='lab'
             )
 
-            max_colors_per_cluster*=10
-            eps*=10
 
             # Then cluster the colors
             seg_compression = cluster_palette_colors(
@@ -5529,7 +5615,7 @@ if __name__ == "__main__":
     # Extract the merged segment dictionary
     merged_segment = roi_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=5
+    quality=25
     n_colors = merged_segment['actual_colors']
 
     """
@@ -5550,8 +5636,6 @@ if __name__ == "__main__":
         n_colors, quality, color_space='lab'
     )
 
-    max_colors_per_cluster*=10
-    eps*=10
 
     # ==============================================
     # OPTION 1: If you want to cluster the merged palette
@@ -5663,7 +5747,7 @@ if __name__ == "__main__":
     # Extract the merged segment dictionary
     merged_segment = nonroi_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=5
+    quality=10
     n_colors = merged_segment['actual_colors']
 
     """
@@ -5683,9 +5767,6 @@ if __name__ == "__main__":
     eps, min_samples, max_colors_per_cluster = compute_clustering_params(
         n_colors, quality, color_space='lab'
     )
-    eps*=10
-
-    max_colors_per_cluster*=10
 
     # ==============================================
     # OPTION 1: If you want to cluster the merged palette
@@ -5797,7 +5878,7 @@ if __name__ == "__main__":
     # Extract the merged segment dictionary
     merged_segment = regions_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=15
+    quality=50
     n_colors = merged_segment['actual_colors']
 
     """
@@ -5817,9 +5898,6 @@ if __name__ == "__main__":
     eps, min_samples, max_colors_per_cluster = compute_clustering_params(
         n_colors, quality, color_space='lab'
     )
-    eps*=10
-
-    max_colors_per_cluster*=10
 
     # ==============================================
     # OPTION 1: If you want to cluster the merged palette
