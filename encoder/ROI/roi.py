@@ -4,9 +4,9 @@ from matplotlib import pyplot as plt
 import numpy as np
 
 from encoder.ROI.edges import compute_local_density, suggest_automatic_threshold, get_edge_map
-from encoder.ROI.small_regions import remove_small_regions, connect_nearby_pixels
+from encoder.ROI.small_regions import remove_small_regions, connect_nearby_pixels, connect_by_closing_fast
 from encoder.ROI.thin_regions2 import remove_thin_structures_optimized
-from encoder.ROI.small_gaps import bridge_small_gaps
+from encoder.ROI.small_gaps import bridge_small_gaps, bridge_small_gaps_fast
 
 import time
 
@@ -168,34 +168,46 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
     
     noiseless_binary_borders=remove_small_noise_regions(binary_thin_bordersless, min_size=75)
 
+    print("\n\n\n")
+
+    start_time=time.time()
     # Skeleton-based connection
-    connected_1 = connect_nearby_pixels(
+    """pre_connected = connect_nearby_pixels(
         noiseless_binary_borders,
         connection_distance=25,
         method='skeleton',
         min_region_size=25
+    )"""
+
+    pre_connected = connect_by_closing_fast(
+        noiseless_binary_borders,
+        connection_distance=25,
+        min_region_size=25
     )
+    
+    connected = bridge_small_gaps_fast(pre_connected, max_gap=100, density_threshold=0.2, local_window=15, regional_window=25)
+    print("connected: %s seconds ---" % (time.time() - start_time))
+    
 
-    connected = bridge_small_gaps(connected_1, max_gap=100, density_threshold=0.2, local_window=15, regional_window=25, method="relaxed")
 
+    debug=False
+    if debug:
+        plt.subplot(1, 2, 1)  # 2 rows, 2 columns, first position
+        plt.imshow(pre_connected)  
+        plt.axis('off')  # Hide the axis labels
+        plt.title("pre_connected") 
 
+        # Add the second image to the figure (top-right position)
+        plt.subplot(1, 2, 2)  # 2 rows, 2 columns, second position
+        plt.imshow(connected)  
+        plt.axis('off')  # Hide the axis labels
+        plt.title("connected") 
 
-    plt.subplot(1, 2, 1)  # 2 rows, 2 columns, first position
-    plt.imshow(connected_1)  
-    plt.axis('off')  # Hide the axis labels
-    plt.title("connected_1") 
-
-    # Add the second image to the figure (top-right position)
-    plt.subplot(1, 2, 2)  # 2 rows, 2 columns, second position
-    plt.imshow(connected)  
-    plt.axis('off')  # Hide the axis labels
-    plt.title("connected") 
-
-    plt.show()
+        plt.show()
 
 
     
-
+    start_time=time.time()
     # Step 2: Use the new directional region unification
     unified_borders, region_map = directional_region_unification(
         connected,  # This was the missing variable - using binary_borders instead of binary_image
@@ -203,6 +215,7 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
         min_region_size=min_region_size,
         max_gap_to_bridge=max_gap_to_bridge
     )
+    print("unified_borders: %s seconds ---" % (time.time() - start_time))
 
         
     # Extract ROI and non-ROI
@@ -325,21 +338,26 @@ def directional_region_unification(binary_image,
     # Step 3: Protect borders from being unified
     protected_image = protect_border_regions(denoised, border_mask, kernel_size=15)
 
-    plt.imshow(protected_image)
-    plt.title("protected_image")
-    plt.show()
+    debug=False
+
+    if debug:
+        plt.imshow(protected_image)
+        plt.title("protected_image")
+        plt.show()
     
     # Step 4: Bridge small gaps within regions (not across borders)
-    bridged_image = bridge_small_gaps(protected_image, max_gap=25, density_threshold=0.2, local_window=15, regional_window=25, method="relaxed")
+    bridged_image = bridge_small_gaps_fast(protected_image, max_gap=25, density_threshold=0.2, local_window=15, regional_window=25)
 
-    plt.imshow(bridged_image)
-    plt.title("bridged_image")
-    plt.show()
+    if debug:
+        plt.imshow(bridged_image)
+        plt.title("bridged_image")
+        plt.show()
 
     closed_regions=fill_closed_regions(bridged_image, min_hole_size=10, max_hole_size=10000, connectivity=4)
-    plt.imshow(closed_regions)
-    plt.title("closed_regions")
-    plt.show()
+    if debug:
+        plt.imshow(closed_regions)
+        plt.title("closed_regions")
+        plt.show()
 
     # INSTEAD OF:
     cleaned_image = remove_small_regions(closed_regions, min_size=5, remove_thin_lines=True, kernel_size=30)
