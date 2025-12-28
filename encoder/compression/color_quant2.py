@@ -3715,24 +3715,6 @@ def cluster_palette_colors(compressed_data, eps=10.0, min_samples=2, max_colors_
     
     return new_compressed_data
 
-"""
-def split_large_cluster(cluster_colors, max_size):
-
-    from sklearn.cluster import KMeans
-    
-    n_splits = max(2, len(cluster_colors) // max_size + 1)
-    kmeans = KMeans(n_clusters=n_splits, random_state=42, n_init=3)
-    
-    labels = kmeans.fit_predict(cluster_colors.astype(float))
-    
-    splits = []
-    for i in range(n_splits):
-        mask = labels == i
-        if np.any(mask):
-            splits.append(cluster_colors[mask])
-    
-    return splits
-"""
 
 def split_large_cluster(cluster_colors, max_colors_per_cluster):
     """
@@ -3847,6 +3829,380 @@ def estimate_clustering_mse(orig_palette, new_palette, mapping, indices, h, w):
     estimated_mse = avg_error * 0.3  # Empirical scaling factor
     
     return max(estimated_mse, 0.1)  # Avoid zero
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
+from sklearn.cluster import DBSCAN
+
+def cluster_palette_colors_parallel(quality, compressed_data, eps=10.0, min_samples=2, 
+                                   max_colors_per_cluster=5, num_workers=None):
+    """
+    Parallel version of color clustering.
+    Large clusters are split in parallel using multiple threads.
+    """
+    print(f"\n{'='*60}")
+    print(f"CLUSTERING PALETTE COLORS (Parallel - Black preserved)")
+    print(f"{'='*60}")
+    
+    # Extract original data
+    palette = np.array(compressed_data['palette'], dtype=np.uint8)
+    indices = np.array(compressed_data['indices'])
+    h, w = compressed_data['shape']
+    top_left = compressed_data['top_left']
+    
+    # Get the count of colors (scalar, not array)
+    original_colors_count = len(palette)  # This is a scalar integer
+    num_workers= max(5, math.ceil(original_colors_count/2500) )
+    print(f"Original palette: {original_colors_count} colors")
+    print(f"Clustering parameters: eps={eps}, min_samples={min_samples}")
+    
+    # ==============================================
+    # 1. SEPARATE BLACK FROM OTHER COLORS
+    # ==============================================
+    black_indices = []
+    non_black_indices = []
+    
+    for i, color in enumerate(palette):
+        if np.array_equal(color, [0, 0, 0]):
+            black_indices.append(i)
+        else:
+            non_black_indices.append(i)
+    
+    print(f"  Black colors found: {len(black_indices)}")
+    print(f"  Non-black colors: {len(non_black_indices)}")
+    
+    if len(non_black_indices) == 0:
+        print("  Only black colors - nothing to cluster!")
+        return compressed_data
+    
+    # ==============================================
+    # 2. CLUSTER ONLY NON-BLACK COLORS
+    # ==============================================
+    non_black_palette = palette[non_black_indices]
+    palette_normalized = non_black_palette.astype(float) / 255.0
+    
+    """
+    Removed because way too slow
+    dbscan = DBSCAN(eps=eps/255.0, min_samples=min_samples, metric='euclidean')
+    cluster_labels = dbscan.fit_predict(palette_normalized)
+    """
+
+    # Use MiniBatch K-Means for speed
+    n_clusters=quality
+    kmeans = MiniBatchKMeans(
+        n_clusters=min(n_clusters, len(non_black_palette)),
+        batch_size=1000,
+        random_state=42,
+        n_init='auto'
+    )
+    
+    cluster_labels = kmeans.fit_predict(non_black_palette.astype(float))
+    
+    n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+    n_noise = np.sum(cluster_labels == -1)
+    
+    print(f"DBSCAN found {n_clusters} clusters + {n_noise} noise colors")
+    
+    # ==============================================
+    # 3. PREPARE CLUSTERS FOR PARALLEL PROCESSING
+    # ==============================================
+    new_palette = []
+    color_mapping = {}
+    
+    # Add black colors
+    for old_black_idx in black_indices:
+        new_palette.append(palette[old_black_idx])
+        color_mapping[old_black_idx] = len(new_palette) - 1
+    
+    # Process noise points (not parallelizable - small)
+    noise_mask = cluster_labels == -1
+    noise_relative_indices = np.where(noise_mask)[0]
+    
+    for rel_idx in noise_relative_indices:
+        old_idx = non_black_indices[rel_idx]
+        new_palette.append(palette[old_idx])
+        color_mapping[old_idx] = len(new_palette) - 1
+    
+    # ==============================================
+    # 4. PARALLEL PROCESSING OF LARGE CLUSTERS
+    # ==============================================
+    # Identify clusters that need splitting
+    clusters_to_process = []
+    small_clusters_info = []  # Store info for small clusters
+    
+    unique_labels = set(cluster_labels)
+    
+    for label in unique_labels:
+        if label == -1:
+            continue  # Already processed noise
+        
+        cluster_mask = cluster_labels == label
+        cluster_relative_indices = np.where(cluster_mask)[0]
+        cluster_original_indices = [non_black_indices[idx] for idx in cluster_relative_indices]
+        cluster_colors = palette[cluster_original_indices]
+        
+        if len(cluster_original_indices) > max_colors_per_cluster:
+            # Large cluster - needs parallel splitting
+            clusters_to_process.append({
+                'label': label,
+                'colors': cluster_colors,
+                'original_indices': cluster_original_indices,
+                'size': len(cluster_original_indices)
+            })
+        else:
+            # Small cluster - store for immediate processing
+            small_clusters_info.append({
+                'label': label,
+                'colors': cluster_colors,
+                'original_indices': cluster_original_indices
+            })
+    
+    print(f"Found {len(clusters_to_process)} large clusters for parallel processing")
+    print(f"Found {len(small_clusters_info)} small clusters for immediate processing")
+    
+    # Process small clusters immediately
+    for cluster_info in small_clusters_info:
+        avg_color = np.mean(cluster_info['colors'], axis=0).astype(np.uint8)
+        new_idx = len(new_palette)
+        new_palette.append(avg_color)
+        
+        for old_idx in cluster_info['original_indices']:
+            color_mapping[old_idx] = new_idx
+    
+    # ==============================================
+    # 5. PARALLEL SPLITTING OF LARGE CLUSTERS
+    # ==============================================
+    if clusters_to_process:
+        # Determine number of workers
+        if num_workers is None:
+            num_workers = min(multiprocessing.cpu_count(), len(clusters_to_process))
+        
+        print(f"Using {num_workers} workers for parallel processing")
+        
+        # Process clusters in parallel
+        results = process_clusters_parallel(
+            clusters_to_process, 
+            max_colors_per_cluster, 
+            num_workers
+        )
+        
+        # Process results from parallel workers
+        for cluster_info, split_clusters in results:
+            label = cluster_info['label']
+            original_indices = cluster_info['original_indices']
+            original_colors = cluster_info['colors']
+            
+            if split_clusters is None:
+                # Fallback: use simple averaging
+                print(f"  Cluster {label}: parallel processing failed, using fallback")
+                avg_color = np.mean(original_colors, axis=0).astype(np.uint8)
+                new_idx = len(new_palette)
+                new_palette.append(avg_color)
+                
+                for old_idx in original_indices:
+                    color_mapping[old_idx] = new_idx
+            else:
+                # Process each split cluster
+                for split_cluster in split_clusters:
+                    avg_color = np.mean(split_cluster, axis=0).astype(np.uint8)
+                    new_idx = len(new_palette)
+                    new_palette.append(avg_color)
+                    
+                    # Map colors in this split
+                    for color in split_cluster:
+                        old_idx = find_color_index(palette, color)
+                        if old_idx is not None:
+                            color_mapping[old_idx] = new_idx
+    
+    # ==============================================
+    # 6. COMPLETE PROCESSING AND CALCULATIONS
+    # ==============================================
+    new_palette = np.array(new_palette)
+    new_color_count = len(new_palette)  # This is a scalar integer
+    
+    # Verify black is preserved
+    black_preserved = any(np.array_equal(color, [0, 0, 0]) for color in new_palette)
+    print(f"  Black preserved: {black_preserved}")
+    
+    # FIXED: Use scalar integers for printing
+    print(f"New palette: {new_color_count} colors")
+    print(f"Color reduction: {original_colors_count} → {new_color_count} "
+          f"({(original_colors_count - new_color_count)/original_colors_count*100:.1f}%)")
+    
+    # Update indices
+    mapping_array = np.zeros(original_colors_count, dtype=np.uint16)
+    for old_idx, new_idx in color_mapping.items():
+        mapping_array[old_idx] = new_idx
+    
+    new_indices = mapping_array[indices].tolist()
+    
+    # ==============================================
+    # 7. CALCULATE STATISTICS (MISSING IN ORIGINAL)
+    # ==============================================
+    total_pixels = h * w
+    original_size = compressed_data.get('original_size', total_pixels * 3)
+    
+    # Calculate new compressed size
+    if new_color_count <= 256:
+        bytes_per_index = 1
+        index_dtype = 'uint8'
+    else:
+        bytes_per_index = 2
+        index_dtype = 'uint16'
+    
+    new_palette_size = new_color_count * 3
+    new_indices_size = total_pixels * bytes_per_index
+    metadata_size = 100  # Approximate
+    
+    new_compressed_size = new_palette_size + new_indices_size + metadata_size
+    compression_ratio = original_size / new_compressed_size if new_compressed_size > 0 else 0
+    
+    # Estimate PSNR - FIXED: pass proper parameters
+    mse = estimate_clustering_mse(palette, new_palette, color_mapping, indices, h, w)
+    psnr = 10 * np.log10(255*255/mse) if mse > 0 else float('inf')
+    
+    # ==============================================
+    # 8. CREATE NEW COMPRESSED DATA
+    # ==============================================
+    new_compressed_data = {
+        'method': 'clustered_colors',
+        'top_left': top_left,
+        'shape': (h, w),
+        'palette': new_palette.tolist(),
+        'indices': new_indices,
+        'original_unique_colors': original_colors_count,  # Use scalar
+        'compressed_colors': new_color_count,  # Use scalar
+        'index_dtype': index_dtype,
+        'original_size': original_size,
+        'compressed_size': new_compressed_size,
+        'compression_ratio': compression_ratio,
+        'mse': float(mse),
+        'psnr': float(psnr),
+        'clustering_params': {
+            'eps': eps,
+            'min_samples': min_samples,
+            'max_colors_per_cluster': max_colors_per_cluster
+        },
+        'encoding': 'dbscan_clustered',
+        'black_preserved': True,
+        'parallel_processed': True  # Flag to indicate parallel processing was used
+    }
+    
+    print(f"\nParallel clustering complete:")
+    print(f"  Colors: {original_colors_count} → {new_color_count}")
+    print(f"  PSNR: {psnr:.2f} dB")
+    print(f"  Compression: {original_size:,} → {new_compressed_size:,} bytes")
+    print(f"  Ratio: {compression_ratio:.2f}:1")
+    
+    return new_compressed_data
+
+def process_clusters_parallel(clusters_to_process, max_colors_per_cluster, num_workers):
+    """
+    Process multiple clusters in parallel using ThreadPoolExecutor.
+    """
+    results = []
+    
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        # Submit all tasks
+        future_to_cluster = {}
+        for cluster_info in clusters_to_process:
+            future = executor.submit(
+                split_cluster_worker,
+                cluster_info['colors'],
+                max_colors_per_cluster,
+                cluster_info['label']
+            )
+            future_to_cluster[future] = cluster_info
+        
+        # Process results as they complete
+        for future in as_completed(future_to_cluster):
+            cluster_info = future_to_cluster[future]
+            try:
+                split_clusters = future.result(timeout=30)  # 30 second timeout
+                results.append((cluster_info, split_clusters))
+            except Exception as e:
+                print(f"Error processing cluster {cluster_info['label']}: {e}")
+                results.append((cluster_info, None))  # Mark as failed
+    
+    return results
+
+def split_cluster_worker(cluster_colors, max_colors_per_cluster, cluster_label=None):
+    """
+    Worker function for parallel cluster splitting.
+    """
+    try:
+        return split_large_cluster(cluster_colors, max_colors_per_cluster)
+    except Exception as e:
+        if cluster_label:
+            print(f"Worker error for cluster {cluster_label}: {e}")
+        return None
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def hierarchical_color_clustering(compressed_data, quality=85):
@@ -4919,7 +5275,8 @@ if __name__ == "__main__":
             
 
             # Then cluster the colors
-            seg_compression = cluster_palette_colors(
+            seg_compression = cluster_palette_colors_parallel(
+                quality,
                 seg_compression,
                 eps=eps,           # Distance threshold (0-255 scale)
                 min_samples=1,      # Min colors to form cluster
@@ -5395,7 +5752,8 @@ if __name__ == "__main__":
 
 
             # Then cluster the colors
-            seg_compression = cluster_palette_colors(
+            seg_compression = cluster_palette_colors_parallel(
+                quality,
                 seg_compression,
                 eps=eps,           # Distance threshold (0-255 scale)
                 min_samples=1,      # Min colors to form cluster
@@ -5821,7 +6179,8 @@ if __name__ == "__main__":
     # ==============================================
     # You already have the merged palette in merged_segment
     # Just cluster it directly:
-    ROI_seg_compression = cluster_palette_colors(
+    ROI_seg_compression = cluster_palette_colors_parallel(
+        quality,
         merged_segment,  # Pass the dictionary
         eps=eps,
         min_samples=1,
@@ -5952,7 +6311,8 @@ if __name__ == "__main__":
     # ==============================================
     # You already have the merged palette in merged_segment
     # Just cluster it directly:
-    nonROI_seg_compression = cluster_palette_colors(
+    nonROI_seg_compression = cluster_palette_colors_parallel(
+        quality,
         merged_segment,  # Pass the dictionary
         eps=eps,
         min_samples=1,
@@ -6083,7 +6443,8 @@ if __name__ == "__main__":
     # ==============================================
     # You already have the merged palette in merged_segment
     # Just cluster it directly:
-    image_seg_compression = cluster_palette_colors(
+    image_seg_compression = cluster_palette_colors_parallel(
+        quality,
         merged_segment,  # Pass the dictionary
         eps=eps,
         min_samples=1,
