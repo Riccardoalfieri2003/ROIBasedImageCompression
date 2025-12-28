@@ -194,11 +194,11 @@ def lossless_compress_optimized(palette, indices_list, shape, use_manual_rle=Fal
     
     return {
         's': shape,
-        'ps': len(palette),
+        'l': len(palette),
         'p': palette_compressed,
         'i': indices_compressed,
-        'idx_dtype': dtype_name,  # Store dtype for decompression
-        'method': method
+        'd': dtype_name,  # Store dtype for decompression
+        #'method': method
     }
 
 def compress_indices_simple_optimized(indices_data, dtype=np.uint8):

@@ -67,13 +67,15 @@ def lossless_decompress(compressed_data):
     """
     # Extract data
     shape = compressed_data['s']
-    palette_size = compressed_data['ps']
+    palette_size = compressed_data['l']
     palette_data = compressed_data['p']
     indices_data = compressed_data['i']
     
     # Get dtype from metadata (added in lossless_compress_optimized)
-    dtype_str = compressed_data.get('idx_dtype', 'uint16')  # Default to uint16 for backward compatibility
-    method = compressed_data.get('method', 'zlib_direct')
+    dtype_str = compressed_data.get('d', 'uint16')  # Default to uint16 for backward compatibility
+    #method = compressed_data.get('method', 'zlib_direct')
+
+    method=""
     
     # Decompress palette
     palette = decompress_palette(palette_data, palette_size)

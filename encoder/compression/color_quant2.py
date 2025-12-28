@@ -4681,7 +4681,7 @@ def optimize_compressed_dtype(compressed_data):
 
 if __name__ == "__main__":
 
-    image_name = 'images/Lenna.webp'
+    image_name = 'images/waikiki.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -6209,7 +6209,7 @@ if __name__ == "__main__":
         compressed_data = lossless_compress_optimized(palette, indices_matrix, shape)
         
         # Save
-        filename = "compressed_lenna.hccq"
+        filename = "compressed_waikiki.hccq"
         file_size = save_compressed(compressed_data, filename)
         
         # Stats
