@@ -3855,6 +3855,546 @@ def estimate_clustering_mse(orig_palette, new_palette, mapping, indices, h, w):
 
 
 
+def pre_quantize_colors(colors, bin_size=2, black_threshold=5):
+    """
+    Safe pre-quantization that avoids creating artificial black colors.
+    
+    Args:
+        colors: RGB colors array [n, 3] with values 0-255
+        bin_size: Size of the bin
+        black_threshold: Colors darker than this are considered "near-black"
+                         and should be processed carefully
+    """
+    # Ensure bin_size is at least 2 to avoid too much precision loss
+    bin_size = max(2, bin_size)
+    
+    # Create bins
+    binned_colors = (colors // bin_size) * bin_size
+    
+    # Get unique bins
+    unique_bins, inverse_indices = np.unique(binned_colors, axis=0, return_inverse=True)
+    
+    # Calculate average for each bin, but protect against creating black
+    bin_averages = []
+    black_protection_map = {}  # Track if bin is near-black
+    
+    for i in range(len(unique_bins)):
+        mask = inverse_indices == i
+        bin_colors = colors[mask]
+        
+        # Check if this bin contains any near-black colors
+        is_near_black = np.any(np.all(bin_colors <= black_threshold, axis=1))
+        
+        if is_near_black and len(bin_colors) > 1:
+            # Special handling for near-black bins to avoid creating pure black
+            # Use median instead of mean to avoid averaging to black
+            avg_color = np.median(bin_colors, axis=0).astype(np.uint8)
+            
+            # Ensure it's not pure black unless all colors are black
+            if np.array_equal(avg_color, [0, 0, 0]):
+                # Find the darkest non-black color in the bin
+                non_black_mask = ~np.all(bin_colors == [0, 0, 0], axis=1)
+                if np.any(non_black_mask):
+                    avg_color = np.median(bin_colors[non_black_mask], axis=0).astype(np.uint8)
+        else:
+            # Regular bin, use mean
+            avg_color = np.mean(bin_colors, axis=0).astype(np.uint8)
+        
+        bin_averages.append(avg_color)
+        black_protection_map[i] = is_near_black
+    
+    bin_averages = np.array(bin_averages)
+    
+    return bin_averages, inverse_indices, black_protection_map
+
+def smart_color_binning(colors, target_bins=2000, bin_size=8, similarity_threshold=30):
+    """
+    Smart binning that uses both spatial binning and color similarity.
+    Guarantees at most target_bins output colors.
+    """
+    n_colors = len(colors)
+    
+    if n_colors <= target_bins:
+        return colors, np.arange(n_colors), np.ones(n_colors, dtype=bool)
+    
+    print(f"  Smart binning: {n_colors} colors -> target {target_bins} bins, bin_size={bin_size}")
+    
+    # Step 1: Initial spatial binning (fast)
+    binned_colors = (colors // bin_size) * bin_size
+    unique_bins, bin_indices = np.unique(binned_colors, axis=0, return_inverse=True)
+    
+    print(f"  Initial spatial bins: {len(unique_bins)}")
+    
+    if len(unique_bins) <= target_bins:
+        # We're already under target, just average each bin
+        bin_representatives = []
+        for i in range(len(unique_bins)):
+            mask = bin_indices == i
+            bin_colors = colors[mask]
+            
+            # Safe average that doesn't create black
+            avg = safe_color_average(bin_colors)
+            bin_representatives.append(avg)
+        
+        return np.array(bin_representatives), bin_indices, np.ones(len(unique_bins), dtype=bool)
+    
+    # Step 2: Merge similar bins to reach target
+    print(f"  Need to merge bins: {len(unique_bins)} -> {target_bins}")
+    
+    # Calculate bin centroids
+    bin_centroids = []
+    bin_color_counts = []
+    for i in range(len(unique_bins)):
+        mask = bin_indices == i
+        bin_colors = colors[mask]
+        centroid = safe_color_average(bin_colors)
+        bin_centroids.append(centroid)
+        bin_color_counts.append(len(bin_colors))
+    
+    bin_centroids = np.array(bin_centroids)
+    bin_color_counts = np.array(bin_color_counts)
+    
+    # Merge bins using hierarchical clustering
+    from scipy.spatial.distance import pdist, squareform
+    from scipy.cluster.hierarchy import linkage, fcluster
+    
+    # Calculate distances between bin centroids
+    distances = pdist(bin_centroids.astype(float) / 255.0, metric='euclidean')
+    
+    # Perform hierarchical clustering
+    Z = linkage(distances, method='average')
+    
+    # Cut tree to get target number of clusters
+    cluster_labels = fcluster(Z, t=target_bins, criterion='maxclust')
+    
+    # Create final merged bins
+    n_final_clusters = len(np.unique(cluster_labels))
+    print(f"  Final clusters after merging: {n_final_clusters}")
+    
+    # Map old bin indices to new cluster indices
+    old_bin_to_new_cluster = cluster_labels - 1  # Convert to 0-based
+    
+    # Update bin_indices for original colors
+    new_bin_indices = old_bin_to_new_cluster[bin_indices]
+    
+    # Calculate representatives for each final cluster
+    final_representatives = []
+    for i in range(n_final_clusters):
+        # Find all original colors in this cluster
+        mask = new_bin_indices == i
+        cluster_colors = colors[mask]
+        
+        if len(cluster_colors) == 0:
+            # Shouldn't happen, but handle gracefully
+            final_representatives.append(np.array([128, 128, 128], dtype=np.uint8))
+        else:
+            rep = safe_color_average(cluster_colors)
+            final_representatives.append(rep)
+    
+    # Also return which bins were merged
+    bins_merged = len(unique_bins) > n_final_clusters
+    
+    return np.array(final_representatives), new_bin_indices, bins_merged
+
+def safe_color_average(colors):
+    """
+    Average colors safely without creating black artifacts.
+    """
+    if len(colors) == 0:
+        return np.array([128, 128, 128], dtype=np.uint8)
+    
+    if len(colors) == 1:
+        return colors[0]
+    
+    # Convert to float for accurate calculation
+    colors_float = colors.astype(np.float32)
+    
+    # Calculate weighted average (weight by luminance)
+    luminance = 0.299 * colors_float[:, 0] + 0.587 * colors_float[:, 1] + 0.114 * colors_float[:, 2]
+    
+    # Add small epsilon to avoid zero weights
+    weights = luminance + 1e-6
+    weights = weights / weights.sum()
+    
+    # Weighted average
+    weighted_avg = np.sum(colors_float * weights[:, np.newaxis], axis=0)
+    
+    # Round properly
+    rounded = np.round(weighted_avg).astype(np.int32)
+    
+    # Clamp to valid range
+    clamped = np.clip(rounded, 0, 255).astype(np.uint8)
+    
+    # CRITICAL: Prevent pure black unless all inputs are black
+    if np.array_equal(clamped, [0, 0, 0]) and not np.all(colors == 0):
+        # Find the brightest color in the set
+        brightest_idx = np.argmax(luminance)
+        brightest = colors[brightest_idx]
+        
+        # Use a mix of average and brightest
+        mixed = (clamped.astype(float) * 0.3 + brightest.astype(float) * 0.7)
+        clamped = np.round(mixed).astype(np.uint8)
+        
+        # Ensure minimum value of 1
+        clamped = np.maximum(clamped, [1, 1, 1])
+    
+    return clamped
+
+
+
+
+
+def simple_effective_binning(colors, target_bins=2000):
+    """
+    Simple but effective binning that guarantees target_bins or less.
+    """
+    n_colors = len(colors)
+    
+    if n_colors <= target_bins:
+        return colors, np.arange(n_colors)
+    
+    print(f"  Reducing {n_colors} colors to {target_bins} bins")
+    
+    # Method 1: Use K-Means for the best results
+    try:
+        from sklearn.cluster import MiniBatchKMeans
+        
+        kmeans = MiniBatchKMeans(
+            n_clusters=target_bins,
+            batch_size=min(1000, n_colors),
+            random_state=42,
+            n_init='auto',
+            max_iter=10  # Few iterations for speed
+        )
+        
+        labels = kmeans.fit_predict(colors.astype(float))
+        centers = kmeans.cluster_centers_
+        
+        # Round centers properly
+        centers_rounded = np.round(centers).astype(np.int32)
+        centers_clamped = np.clip(centers_rounded, 0, 255).astype(np.uint8)
+        
+        # Fix any black centers
+        black_mask = np.all(centers_clamped == [0, 0, 0], axis=1)
+        for i in np.where(black_mask)[0]:
+            cluster_colors = colors[labels == i]
+            if len(cluster_colors) > 0 and not np.all(cluster_colors == 0):
+                # Use median instead
+                centers_clamped[i] = np.median(cluster_colors, axis=0).astype(np.uint8)
+                if np.array_equal(centers_clamped[i], [0, 0, 0]):
+                    centers_clamped[i] = np.maximum(
+                        np.min(cluster_colors, axis=0), 
+                        [1, 1, 1]
+                    )
+        
+        return centers_clamped, labels
+        
+    except ImportError:
+        # Fallback: spatial binning with adaptive bin size
+        pass
+    
+    # Method 2: Adaptive spatial binning
+    # Calculate required bin size to achieve target_bins
+    # Each bin covers bin_size^3 in color space
+    # We want: (256/bin_size)^3 ≈ target_bins
+    # So: bin_size ≈ 256 / (target_bins^(1/3))
+    
+    bin_size = max(2, int(256 / (target_bins ** (1/3))))
+    print(f"  Using adaptive bin_size={bin_size}")
+    
+    # Apply binning
+    binned = (colors // bin_size) * bin_size
+    
+    # Get unique bins
+    unique_bins, inverse = np.unique(binned, axis=0, return_inverse=True)
+    
+    print(f"  Created {len(unique_bins)} unique bins")
+    
+    # If still too many, increase bin_size and try again
+    if len(unique_bins) > target_bins * 1.5:  # Allow some overhead
+        bin_size = int(bin_size * 1.5)
+        binned = (colors // bin_size) * bin_size
+        unique_bins, inverse = np.unique(binned, axis=0, return_inverse=True)
+        print(f"  Increased bin_size to {bin_size}, now {len(unique_bins)} bins")
+    
+    # Calculate bin representatives
+    representatives = []
+    for i in range(len(unique_bins)):
+        mask = inverse == i
+        bin_colors = colors[mask]
+        
+        # Use safe average
+        rep = safe_color_average_simple(bin_colors)
+        representatives.append(rep)
+    
+    return np.array(representatives), inverse
+
+def safe_color_average_simple(colors):
+    """
+    Simple safe average - the key is in the rounding!
+    """
+    if len(colors) == 0:
+        return np.array([128, 128, 128], dtype=np.uint8)
+    
+    # Calculate mean in float
+    mean_float = np.mean(colors.astype(np.float32), axis=0)
+    
+    # ROUND to nearest integer (not truncate!)
+    mean_rounded = np.round(mean_float).astype(np.int32)
+    
+    # Clamp
+    result = np.clip(mean_rounded, 0, 255).astype(np.uint8)
+    
+    # Final safety check
+    if np.array_equal(result, [0, 0, 0]) and not np.all(colors == 0):
+        # Use minimum color (but at least 1)
+        min_color = np.min(colors, axis=0)
+        result = np.maximum(min_color, [1, 1, 1])
+    
+    return result
+
+def pre_quantize_colors_fixed(colors, bin_size=2):
+    """Fixed version without the problematic shift."""
+    # Remove the + (bin_size // 2)
+    binned_colors = (colors // bin_size) * bin_size  # NO SHIFT!
+    
+    unique_bins, inverse_indices = np.unique(binned_colors, axis=0, return_inverse=True)
+    
+    bin_averages = []
+    for i in range(len(unique_bins)):
+        mask = inverse_indices == i
+        bin_colors = colors[mask]
+        
+        # Use safe rounding
+        avg_float = np.mean(bin_colors.astype(float), axis=0)
+        avg_rounded = np.round(avg_float).astype(np.uint8)  # ROUND, don't truncate!
+        
+        # Safety check
+        if np.array_equal(avg_rounded, [0, 0, 0]) and not np.all(bin_colors == 0):
+            # Use the minimum color in the bin (but at least 1)
+            min_color = np.min(bin_colors, axis=0)
+            avg_rounded = np.maximum(min_color, [1, 1, 1])
+        
+        bin_averages.append(avg_rounded)
+    
+    return np.array(bin_averages), inverse_indices
+
+
+
+
+
+def divide_3d_space_colors(colors, bin_size=4, exclude_black=True):
+    """
+    Divide RGB 3D space into cubes and average colors within each cube.
+    
+    Args:
+        colors: Array of RGB colors [n, 3], values 0-255, dtype uint8
+        bin_size: Size of cube side (1, 2, 4, 8, 16, 32, 64, 128, 256)
+        exclude_black: If True, pure black [0,0,0] is excluded from averaging
+    
+    Returns:
+        quantized_colors: Unique averaged colors [m, 3]
+        cube_indices: For each input color, which cube it belongs to [n]
+        cube_info: Dictionary with cube statistics
+    """
+    # Validate inputs
+    if len(colors) == 0:
+        return np.array([], dtype=np.uint8), np.array([], dtype=int), {}
+    
+    # Ensure colors are uint8
+    colors = colors.astype(np.uint8)
+    
+    # Ensure bin_size is power of 2 and valid
+    valid_bin_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+    if bin_size not in valid_bin_sizes:
+        # Find nearest valid bin_size
+        bin_size = min(valid_bin_sizes, key=lambda x: abs(x - bin_size))
+        print(f"Adjusted bin_size to {bin_size}")
+    
+    # Calculate number of cubes per dimension
+    cubes_per_side = 256 // bin_size
+    if 256 % bin_size != 0:
+        cubes_per_side += 1
+    
+    total_cubes = cubes_per_side ** 3
+    print(f"Dividing 256x256x256 space into {cubes_per_side}^3 = {total_cubes:,} cubes")
+    print(f"Each cube is {bin_size}x{bin_size}x{bin_size} units")
+    
+    # ==============================================
+    # 1. CALCULATE CUBE COORDINATES FOR EACH COLOR
+    # ==============================================
+    # Convert to int32 first to avoid overflow!
+    colors_int32 = colors.astype(np.int32)
+    cube_coords = colors_int32 // bin_size  # shape [n, 3], dtype int32
+    
+    # Create unique cube ID for each cube
+    # Using: id = x * (cubes_per_side^2) + y * cubes_per_side + z
+    # Use int64 to be safe with large numbers
+    cubes_per_side_sq = cubes_per_side * cubes_per_side
+    
+    cube_ids = (cube_coords[:, 0] * cubes_per_side_sq +
+                cube_coords[:, 1] * cubes_per_side +
+                cube_coords[:, 2])
+    
+    # Get unique cubes and mapping
+    unique_cube_ids, inverse_indices = np.unique(cube_ids, return_inverse=True)
+    n_cubes = len(unique_cube_ids)
+    
+    print(f"Non-empty cubes: {n_cubes:,} ({n_cubes/total_cubes*100:.1f}% of possible cubes)")
+    
+    # ==============================================
+    # 2. CALCULATE AVERAGE COLOR FOR EACH CUBE
+    # ==============================================
+    quantized_colors = np.zeros((n_cubes, 3), dtype=np.uint8)
+    cube_stats = {}
+    
+    for cube_idx in range(n_cubes):
+        # Get all colors in this cube
+        mask = inverse_indices == cube_idx
+        cube_colors = colors[mask]  # Use original uint8 colors
+        
+        if len(cube_colors) == 0:
+            continue
+        
+        # Handle black exclusion
+        if exclude_black:
+            # Separate black from non-black colors
+            black_mask = np.all(cube_colors == [0, 0, 0], axis=1)
+            non_black_colors = cube_colors[~black_mask]
+            black_colors = cube_colors[black_mask]
+            
+            if len(non_black_colors) == 0:
+                # All colors in this cube are black
+                avg_color = np.array([0, 0, 0], dtype=np.uint8)
+            elif len(black_colors) == 0:
+                # No black colors, average all
+                avg_color = calculate_safe_average(non_black_colors)
+            else:
+                # Mix of black and non-black
+                # Average non-black colors, keep black as black
+                avg_color = calculate_safe_average(non_black_colors)
+        else:
+            # Include black in averaging
+            avg_color = calculate_safe_average(cube_colors)
+        
+        quantized_colors[cube_idx] = avg_color
+        
+        # Store cube statistics
+        original_cube_id = int(unique_cube_ids[cube_idx])
+        cube_stats[original_cube_id] = {
+            'avg_color': avg_color,
+            'n_colors': len(cube_colors),
+            'cube_coord': cube_coords[mask][0].tolist(),  # Convert to list
+            'colors_sample': cube_colors[:min(3, len(cube_colors))].tolist()
+        }
+    
+    # ==============================================
+    # 3. POST-PROCESSING: FIX BLACK ARTIFACTS
+    # ==============================================
+    black_mask = np.all(quantized_colors == [0, 0, 0], axis=1)
+    n_black_cubes = np.sum(black_mask)
+    
+    if n_black_cubes > 0:
+        print(f"Found {n_black_cubes} cubes that became black")
+        
+        for cube_idx in np.where(black_mask)[0]:
+            mask = inverse_indices == cube_idx
+            cube_colors = colors[mask]
+            
+            # Skip if all colors are actually black
+            if np.all(cube_colors == 0):
+                continue
+            
+            # Fix black artifact
+            if exclude_black:
+                non_black = cube_colors[~np.all(cube_colors == [0, 0, 0], axis=1)]
+                if len(non_black) > 0:
+                    fixed_color = get_dominant_bright_color(non_black)
+                    quantized_colors[cube_idx] = fixed_color
+            else:
+                fixed_color = get_dominant_bright_color(cube_colors)
+                quantized_colors[cube_idx] = fixed_color
+    
+    print(f"Quantization complete: {len(colors):,} → {n_cubes:,} colors")
+    
+    return quantized_colors, inverse_indices, cube_stats
+
+def calculate_safe_average(colors):
+    """
+    Calculate average color safely without creating black artifacts.
+    Uses weighted average based on luminance.
+    """
+    if len(colors) == 0:
+        return np.array([128, 128, 128], dtype=np.uint8)
+    
+    if len(colors) == 1:
+        return colors[0]
+    
+    # Convert to float for accurate calculation
+    colors_float = colors.astype(np.float32)
+    
+    # Calculate luminance for weighting (bright colors get more weight)
+    luminance = (0.299 * colors_float[:, 0] + 
+                 0.587 * colors_float[:, 1] + 
+                 0.114 * colors_float[:, 2])
+    
+    # Avoid zero weights
+    weights = luminance + 1.0  # Add 1 so dark colors still have some weight
+    weights = weights / weights.sum()
+    
+    # Weighted average
+    weighted_avg = np.sum(colors_float * weights[:, np.newaxis], axis=0)
+    
+    # Round to nearest integer (CRITICAL: don't truncate!)
+    rounded = np.round(weighted_avg).astype(np.int32)
+    
+    # Clamp to valid range
+    result = np.clip(rounded, 0, 255).astype(np.uint8)
+    
+    # Final safety: if result is black but inputs weren't all black
+    if np.array_equal(result, [0, 0, 0]) and not np.all(colors == 0):
+        # Use the color with highest luminance
+        brightest_idx = np.argmax(luminance)
+        result = colors[brightest_idx]
+    
+    return result
+
+
+def get_dominant_bright_color(colors):
+    """
+    Get a representative bright color from a set, avoiding black.
+    """
+    if len(colors) == 0:
+        return np.array([128, 128, 128], dtype=np.uint8)
+    
+    # Calculate luminance
+    luminance = 0.299 * colors[:, 0] + 0.587 * colors[:, 1] + 0.114 * colors[:, 2]
+    
+    # Get the brightest color
+    brightest_idx = np.argmax(luminance)
+    brightest = colors[brightest_idx]
+    
+    # Ensure not black (unless all are black)
+    if np.array_equal(brightest, [0, 0, 0]) and not np.all(colors == 0):
+        # Find next brightest non-black
+        non_black_mask = ~np.all(colors == [0, 0, 0], axis=1)
+        if np.any(non_black_mask):
+            non_black = colors[non_black_mask]
+            non_black_lum = luminance[non_black_mask]
+            brightest = non_black[np.argmax(non_black_lum)]
+    
+    return brightest
+
+
+
+
+
+
+
+
+
+
+
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
@@ -3906,24 +4446,41 @@ def cluster_palette_colors_parallel(quality, compressed_data, eps=10.0, min_samp
     # ==============================================
     non_black_palette = palette[non_black_indices]
     palette_normalized = non_black_palette.astype(float) / 255.0
-    
-    """
-    Removed because way too slow
-    dbscan = DBSCAN(eps=eps/255.0, min_samples=min_samples, metric='euclidean')
-    cluster_labels = dbscan.fit_predict(palette_normalized)
-    """
 
-    # Use MiniBatch K-Means for speed
-    n_clusters=quality
-    kmeans = MiniBatchKMeans(
-        n_clusters=min(n_clusters, len(non_black_palette)),
-        batch_size=1000,
-        random_state=42,
-        n_init='auto'
-    )
+    if len(non_black_palette)>=10000:
+
+        # Use MiniBatch K-Means for speed
+        n_clusters=math.ceil(len(non_black_palette)*(quality/100)/10)
+        kmeans = MiniBatchKMeans(
+            n_clusters=n_clusters,
+            batch_size=1000,
+            random_state=42,
+            n_init='auto'
+        )
+        
+        cluster_labels = kmeans.fit_predict(non_black_palette.astype(float))
     
-    cluster_labels = kmeans.fit_predict(non_black_palette.astype(float))
+        # Get the actual number of clusters found (K-means always finds n_clusters)
+        actual_clusters = len(np.unique(cluster_labels))
+        
+        # Get the cluster centers (these are your reduced colors)
+        cluster_centers = kmeans.cluster_centers_
+        
+        # Round and convert to uint8
+        reduced_colors = np.round(cluster_centers).astype(np.uint8)
+        
+        print(f"  K-Means reduction: {len(non_black_palette)} → {len(reduced_colors)} colors")
+        print(f"  Actual clusters found: {actual_clusters}")
     
+    else:
+        dbscan = DBSCAN(eps=eps/255.0, min_samples=min_samples, metric='euclidean')
+        #dbscan = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
+        cluster_labels = dbscan.fit_predict(palette_normalized)
+
+
+    
+    
+
     n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
     n_noise = np.sum(cluster_labels == -1)
     
@@ -5037,7 +5594,7 @@ def optimize_compressed_dtype(compressed_data):
 
 if __name__ == "__main__":
 
-    image_name = 'images/waikiki.jpg'
+    image_name = 'images/Hawaii.jpg'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -5252,7 +5809,7 @@ if __name__ == "__main__":
                 (top_left_abs_row, top_left_abs_col)
             )
 
-            quality=10
+            quality=15
             n_colors = seg_compression['actual_colors']
 
             """
@@ -5606,7 +6163,7 @@ if __name__ == "__main__":
         
         window = math.ceil(math.ceil(math.log(bbox_region.size, 10)) * math.log(bbox_region.size))
         normalized_overall_score = normalize_result(overall_score, window)
-        optimal_segments = math.ceil(normalized_overall_score)/3
+        optimal_segments = math.ceil(normalized_overall_score)
         
         if optimal_segments <= 0: 
             optimal_segments = 1
@@ -6285,7 +6842,7 @@ if __name__ == "__main__":
     # Extract the merged segment dictionary
     merged_segment = nonroi_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=10
+    quality=15
     n_colors = merged_segment['actual_colors']
 
     """
@@ -6417,7 +6974,7 @@ if __name__ == "__main__":
     # Extract the merged segment dictionary
     merged_segment = regions_image[0]  # This contains palette and indices, NOT the image!
 
-    quality=50
+    quality=35
     n_colors = merged_segment['actual_colors']
 
     """
@@ -6570,7 +7127,7 @@ if __name__ == "__main__":
         compressed_data = lossless_compress_optimized(palette, indices_matrix, shape)
         
         # Save
-        filename = "compressed_waikiki.hccq"
+        filename = "compressed_hawaii.hccq"
         file_size = save_compressed(compressed_data, filename)
         
         # Stats

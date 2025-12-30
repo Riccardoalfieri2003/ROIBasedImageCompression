@@ -32,8 +32,8 @@ if __name__ == "__main__":
     # Example data
 
     # Load images
-    original_path = 'images/waikiki.jpg'
-    reconstructed_path = 'compressed_waikiki.hccq'  # Your saved reconstruction
+    original_path = 'images/Hawaii.jpg'
+    reconstructed_path = 'compressed_hawaii.hccq'  # Your saved reconstruction
 
     # Load original image
     original_bgr = cv2.imread(original_path)
