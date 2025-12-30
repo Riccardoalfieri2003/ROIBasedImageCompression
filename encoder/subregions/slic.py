@@ -3,11 +3,9 @@ from skimage import filters
 import numpy as np
 from skimage.segmentation import slic
 import matplotlib.pyplot as plt
+import math
 
-def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight=0.3):
-    """
-    Enhanced SLIC that considers both color and texture
-    """
+"""def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight=0.3):
     # Calculate texture features
     gray = rgb2gray(image)
     texture_map = np.zeros_like(gray)
@@ -37,6 +35,56 @@ def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight
     )
     
     return segments, texture_map
+"""
+
+#def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight=0.3):
+def enhanced_slic_with_texture(image, n_segments=100, compactness=10, scale_factor=0.3):
+
+    # Calculate texture features
+    gray = rgb2gray(image)
+    texture_map = np.zeros_like(gray)
+    
+    # Calculate texture using Gabor filters
+    for theta in [0, np.pi/4, np.pi/2, 3*np.pi/4]:
+        gabor_real, gabor_imag = filters.gabor(gray, frequency=0.1, theta=theta)
+        gabor_mag = np.sqrt(gabor_real**2 + gabor_imag**2)
+        texture_map += gabor_mag
+    
+    texture_map /= 4  # Average across orientations
+    
+    # Normalize texture map
+    if texture_map.max() > 0:
+        texture_map = texture_map / texture_map.max()
+
+
+
+    from skimage.transform import resize
+    
+    # Downscale image
+    h, w = image.shape[:2]
+    new_h, new_w = int(h * scale_factor), int(w * scale_factor)
+    
+    small_image = resize(image, (new_h, new_w), 
+                        preserve_range=True, 
+                        anti_aliasing=True).astype(np.uint8)
+    
+    n_segments=math.ceil(n_segments * scale_factor * scale_factor)  # Adjust for area
+    # Run SLIC on small image
+    segments_small = slic(
+        small_image,
+        n_segments=n_segments,
+        compactness=compactness,
+        sigma=1,
+        channel_axis=2
+    )
+    
+    # Upscale segmentation
+    segments = resize(segments_small, (h, w),
+                     order=0,  # Nearest-neighbor for labels
+                     preserve_range=True,
+                     anti_aliasing=False).astype(np.int32)
+    
+    return segments,texture_map
 
 
 from skimage.segmentation import find_boundaries
