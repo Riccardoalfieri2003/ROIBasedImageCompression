@@ -38,7 +38,10 @@ import math
 """
 
 #def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight=0.3):
-def enhanced_slic_with_texture(image, n_segments=100, compactness=10, scale_factor=0.3):
+def enhanced_slic_with_texture(image, n_segments=100, compactness=10):
+
+    scale_factor= round( 500/max(image.shape) , 1 )
+    if scale_factor>1: scale_factor=1
 
     # Calculate texture features
     gray = rgb2gray(image)
