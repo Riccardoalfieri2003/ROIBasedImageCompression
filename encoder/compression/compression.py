@@ -135,7 +135,7 @@ def save_compressed(compressed_data, filename):
     
     # Write with magic header
     with open(filename, 'wb') as f:
-        f.write(b'PQIC')  # Magic number: Palette Quantized Image Compressed
+        f.write(b'RHCCQ')  # Magic number: Region Hierarchical Clustering Color Quantization
         f.write(struct.pack('<I', len(final_compressed)))
         f.write(final_compressed)
     

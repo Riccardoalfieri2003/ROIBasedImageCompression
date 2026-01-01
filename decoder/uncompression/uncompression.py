@@ -138,8 +138,8 @@ def load_compressed(filename):
     """
     with open(filename, 'rb') as f:
         # Read header
-        magic = f.read(4)
-        if magic != b'PQIC':
+        magic = f.read(5)
+        if magic != b'RHCCQ':
             raise ValueError("Invalid file format")
         
         size = struct.unpack('<I', f.read(4))[0]
