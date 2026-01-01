@@ -217,3 +217,76 @@ def decompress_color_quantization(compressed_data):
         'quality': quality
     }
 
+
+
+
+
+
+
+
+
+
+def partial_decompress_color_quantization(compressed_data):
+    """
+    Decompress region compressed with color quantization.
+    Works with the new compression format.
+    
+    Args:
+        compressed_data: Dictionary containing compressed data with keys:
+                        - 'top_left': (y, x) position
+                        - 'shape': (h, w) dimensions
+                        - 'palette_size': number of colors
+                        - 'palette_data': compressed palette bytes
+                        - 'indices_data': compressed indices bytes
+                        - 'method': compression method used
+                        - 'quality': (optional) quality parameter
+    
+    Returns:
+        dict: Contains 'image', 'top_left', 'shape', 'method', 'quality'
+    """
+    # Check if this is already decompressed data (tuple) or compressed dict
+    if isinstance(compressed_data, tuple):
+        # Already decompressed: (palette, indices_list, shape)
+        palette, indices_list, shape = compressed_data
+        top_left = (0, 0)  # Default if not available
+        quality = 50
+        h, w = shape
+    else:
+        # Dictionary with compressed data
+        # Extract metadata
+        top_left = compressed_data.get('top_left', (0, 0))
+        h, w = compressed_data['shape']
+        quality = compressed_data.get('quality', 50)
+
+        palette, indices_list, shape = compressed_data["palette"], compressed_data["indices"], compressed_data["shape"]
+        
+    
+    # Convert to numpy arrays
+    palette_np = np.array(palette, dtype=np.uint8)
+    
+    # Determine correct dtype based on palette size
+    if len(palette_np) > 256:
+        dtype = np.uint16
+    else:
+        dtype = np.uint8
+    
+    # Convert indices list to array and reshape
+    try:
+        index_array = np.array(indices_list, dtype=dtype).reshape(h, w)
+    except (OverflowError, ValueError):
+        # Fallback to uint16 if there's an issue
+        print(f"Warning: Issue with {dtype}, falling back to uint16")
+        index_array = np.array(indices_list, dtype=np.uint16).reshape(h, w)
+    
+    # Reconstruct image by mapping indices to palette colors
+    reconstructed = palette_np[index_array].reshape(h, w, 3)
+    
+    # Return with placement info
+    return {
+        'image': reconstructed,
+        'top_left': top_left,
+        'shape': (h, w),
+        'method': 'color_quantization',
+        'quality': quality
+    }
+

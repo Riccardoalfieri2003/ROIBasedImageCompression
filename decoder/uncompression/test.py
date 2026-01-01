@@ -59,7 +59,7 @@ if __name__ == "__main__":
     import numpy as np
 
     # Assuming reconstructed is a numpy array with shape (h, w, 3)
-    #reconstructed = cv2.GaussianBlur(reconstructed, (3, 3), 0)
+    #reconstructed = cv2.GaussianBlur(reconstructed, (81, 81), 0)
     reconstructed = apply_edge_preserving_blur(reconstructed, blur_strength=5, edge_preservation=50)
 
     import matplotlib.pyplot as plt
