@@ -118,6 +118,9 @@ def merge_region_components_simple(region_components, roi_bbox):
     
     return [merged_segment]
 
+
+
+
 def visualize_merged_result(merged_segments, roi_shape, offset_r, offset_c, original_components=None):
     """
     Visualize the merged result for a ROI with side-by-side comparison.

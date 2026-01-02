@@ -36,7 +36,7 @@ def save_picture(image_seg_compression):
     print(f"✅ Image saved as 'reconstructed_image.jpg'")
     print(f"   Size: {reconstructed_image.shape[1]}x{reconstructed_image.shape[0]}")
 
-def save_compression(image_seg_compression):
+def save_compression(image_seg_compression, filename):
     print(f"\n{'='*60}")
     print(f"FINAL LOSS LESS COMPRESSION")
     print(f"{'='*60}")
@@ -61,7 +61,6 @@ def save_compression(image_seg_compression):
     compressed_data = lossless_compress_optimized(palette, indices_matrix, shape)
     
     # Save
-    filename = "compressed_lenna.rhccq"
     file_size = save_compressed(compressed_data, filename)
     
     # Stats
@@ -77,7 +76,7 @@ def save_compression(image_seg_compression):
 
 if __name__ == "__main__":
 
-    image_name = 'images/Lenna.webp'
+    image_name = 'images/Lenna.png'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -98,7 +97,7 @@ if __name__ == "__main__":
 
 
 
-    roi_quality=25
+    roi_quality=20
     nonroi_quality=10
    
 
@@ -146,4 +145,4 @@ if __name__ == "__main__":
     if savePicture: save_picture(image_seg_compression)
 
     saveCompression = True
-    if saveCompression: save_compression(image_seg_compression)
+    if saveCompression: save_compression(image_seg_compression, filename="compressed_lenna.rhccq")

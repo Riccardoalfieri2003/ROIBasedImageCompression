@@ -2,11 +2,90 @@ import math
 import numpy as np
 
 from encoder.subregions.split_score import calculate_split_score, normalize_result
-from encoder.subregions.slic import enhanced_slic_with_texture, extract_slic_segment_boundaries, visualize_split_analysis
+from encoder.subregions.slic import enhanced_slic_with_texture, extract_slic_segment_boundaries, visualize_split_analysis, watershed_segmentation_with_mask
 from encoder.compression.clustering import compute_clustering_params,cluster_palette_colors_parallel, get_all_unique_colors
 from encoder.compression.merging import merge_region_components_simple
 
-from decoder.uncompression.uncompression import decompress_color_quantization
+from decoder.uncompression.uncompression import decompress_color_quantization, partial_decompress_color_quantization
+
+
+def analyze_black_pixel_source(segments, mask, bbox_region):
+    """
+    Analyze where black pixels in final image come from.
+    """
+    print(f"\n=== BLACK PIXEL ANALYSIS ===")
+    print(f"Mask area: {np.sum(mask)} pixels")
+    
+    # Check each segment
+    for seg_id in np.unique(segments):
+        if seg_id == 0:
+            continue
+        
+        seg_mask = segments == seg_id
+        
+        # Get colors in this segment
+        segment_colors = bbox_region[seg_mask]
+        
+        # Count black pixels
+        if segment_colors.ndim == 3:
+            black_in_segment = np.sum(np.all(segment_colors == [0, 0, 0], axis=1))
+        else:
+            black_in_segment = np.sum(segment_colors == 0)
+        
+        if black_in_segment > 0:
+            print(f"Segment {seg_id}: {black_in_segment} black pixels")
+            
+            # Are these black pixels near mask boundary?
+            from skimage.segmentation import find_boundaries
+            seg_boundary = find_boundaries(seg_mask, mode='inner')
+            mask_boundary = find_boundaries(mask, mode='inner')
+            
+            black_locations = seg_mask.copy()
+            if segment_colors.ndim == 3:
+                black_locations[seg_mask] = np.all(bbox_region[seg_mask] == [0, 0, 0], axis=1)
+            else:
+                black_locations[seg_mask] = bbox_region[seg_mask] == 0
+            
+            near_boundary = np.sum(black_locations & (seg_boundary | mask_boundary))
+            print(f"  {near_boundary} black pixels near segment/mask boundary")
+    
+    # Overall statistics
+    total_black = 0
+    if bbox_region.ndim == 3:
+        total_black = np.sum(np.all(bbox_region[mask] == [0, 0, 0], axis=1))
+    else:
+        total_black = np.sum(bbox_region[mask] == 0)
+    
+    print(f"\nTotal black pixels in masked area: {total_black}/{np.sum(mask)} ({total_black/np.sum(mask)*100:.1f}%)")
+    
+    # Visualize
+    import matplotlib.pyplot as plt
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    axes[0].imshow(bbox_region)
+    axes[0].set_title('Original region')
+    axes[0].axis('off')
+    
+    axes[1].imshow(segments, cmap='tab20')
+    axes[1].set_title(f'SLIC segments: {len(np.unique(segments))-1} segments')
+    axes[1].axis('off')
+    
+    # Show black pixels in red
+    black_mask = np.zeros_like(bbox_region)
+    if bbox_region.ndim == 3:
+        black_mask[np.all(bbox_region == [0, 0, 0], axis=2)] = [255, 0, 0]
+    else:
+        black_mask[bbox_region == 0] = [255, 0, 0]
+    
+    axes[2].imshow(bbox_region)
+    axes[2].imshow(black_mask, alpha=0.5)
+    axes[2].set_title(f'Black pixels (red): {total_black}')
+    axes[2].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
 
 def subregion_quantization(image_rgb, subregions, quality=10, subregion_type=None, debug=False):
 
@@ -78,9 +157,153 @@ def subregion_quantization(image_rgb, subregions, quality=10, subregion_type=Non
         # ==============================================
         if debug: print(f"\n  Applying SLIC segmentation...")
         if optimal_segments<1: optimal_segments=1
-        subregions_segments, texture_map = enhanced_slic_with_texture(bbox_region, n_segments=optimal_segments)
+        subregions_segments, texture_map = enhanced_slic_with_texture(bbox_region, bbox_mask, n_segments=optimal_segments)
         segment_boundaries = extract_slic_segment_boundaries(subregions_segments, bbox_mask)
         
+
+        if debug:
+
+            import matplotlib.pyplot as plt
+            import matplotlib.patches as patches
+            from matplotlib import cm
+            import numpy as np
+
+            # Debug visualization
+            print(f"\n=== DEBUG: SLIC/Watershed Segments ===")
+            print(f"bbox_region shape: {bbox_region.shape}")
+            print(f"bbox_mask shape: {bbox_mask.shape}")
+            print(f"Segments shape: {subregions_segments.shape}")
+            print(f"Unique segment IDs: {np.unique(subregions_segments)}")
+
+            # Create a colormap for segments
+            num_segments = len(np.unique(subregions_segments))
+            colors = cm.get_cmap('tab20', num_segments)
+
+            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+
+            # 1. Original bbox region
+            axes[0, 0].imshow(bbox_region)
+            axes[0, 0].set_title('Original Region')
+            axes[0, 0].axis('off')
+
+            # 2. Mask overlay
+            axes[0, 1].imshow(bbox_region)
+            mask_overlay = np.zeros((*bbox_mask.shape, 4))
+            mask_overlay[bbox_mask] = [1, 0, 0, 0.3]  # Red overlay
+            mask_overlay[~bbox_mask] = [0, 0, 0, 0]  # Transparent
+            axes[0, 1].imshow(mask_overlay)
+            axes[0, 1].set_title('Region Mask (red)')
+            axes[0, 1].axis('off')
+
+            # 3. Segments visualization
+            segments_display = np.zeros((*subregions_segments.shape, 3))
+            for seg_id in np.unique(subregions_segments):
+                if seg_id == 0:  # Background
+                    continue
+                mask = subregions_segments == seg_id
+                color = colors(seg_id % colors.N)[:3]  # RGB only
+                segments_display[mask] = color
+
+            axes[0, 2].imshow(segments_display)
+            axes[0, 2].set_title(f'Segments ({num_segments-1} segments)')
+            axes[0, 2].axis('off')
+
+            # 4. Segments WITH mask boundary
+            axes[1, 0].imshow(segments_display)
+            # Draw mask boundary
+            from skimage.segmentation import find_boundaries
+            mask_boundary = find_boundaries(bbox_mask, mode='inner')
+            y, x = np.where(mask_boundary)
+            axes[1, 0].scatter(x, y, c='red', s=1, alpha=0.5)
+            axes[1, 0].set_title('Segments + Mask Boundary')
+            axes[1, 0].axis('off')
+
+            # 5. Problematic segments (outside mask)
+            problematic_mask = np.zeros_like(bbox_mask, dtype=bool)
+            for seg_id in np.unique(subregions_segments):
+                if seg_id == 0:
+                    continue
+                segment_mask = subregions_segments == seg_id
+                outside_mask = segment_mask & ~bbox_mask
+                if np.any(outside_mask):
+                    problematic_mask = problematic_mask | outside_mask
+
+            axes[1, 1].imshow(bbox_region)
+            if np.any(problematic_mask):
+                problematic_overlay = np.zeros((*problematic_mask.shape, 4))
+                problematic_overlay[problematic_mask] = [1, 0, 0, 0.7]  # Bright red
+                axes[1, 1].imshow(problematic_overlay)
+                axes[1, 1].set_title(f'Problem: {np.sum(problematic_mask)} pixels outside mask')
+            else:
+                axes[1, 1].set_title('Good: No pixels outside mask')
+            axes[1, 1].axis('off')
+
+            # 6. Boundaries visualization
+            axes[1, 2].imshow(bbox_region)
+            for boundary_info in segment_boundaries:
+                seg_id = boundary_info['segment_id']
+                boundary_coords = boundary_info['boundary_coords']
+                
+                if len(boundary_coords) < 3:
+                    continue
+                
+                # Convert to numpy array for plotting
+                boundary_array = np.array(boundary_coords)
+                
+                # Get color for this segment
+                color = colors(seg_id % colors.N)[:3]
+                
+                # Plot boundary
+                axes[1, 2].plot(boundary_array[:, 1], boundary_array[:, 0], 
+                            color=color, linewidth=1.5, alpha=0.8)
+                
+                # Label segment ID
+                if len(boundary_array) > 0:
+                    centroid = np.mean(boundary_array, axis=0)
+                    axes[1, 2].text(centroid[1], centroid[0], str(seg_id),
+                                color='white', fontsize=8, fontweight='bold',
+                                ha='center', va='center',
+                                bbox=dict(boxstyle='round,pad=0.2', 
+                                            facecolor=color, alpha=0.7))
+
+            axes[1, 2].set_title(f'Boundaries ({len(segment_boundaries)} segments)')
+            axes[1, 2].axis('off')
+
+            plt.tight_layout()
+            plt.show()
+
+            # Print statistics
+            print(f"\n=== SEGMENT STATISTICS ===")
+            print(f"Total segments: {num_segments - 1} (excluding background 0)")
+
+            problematic_segments = []
+            for seg_id in np.unique(subregions_segments):
+                if seg_id == 0:
+                    continue
+                
+                segment_mask = subregions_segments == seg_id
+                total_pixels = np.sum(segment_mask)
+                inside_pixels = np.sum(segment_mask & bbox_mask)
+                outside_pixels = np.sum(segment_mask & ~bbox_mask)
+                
+                if outside_pixels > 0:
+                    problematic_segments.append(seg_id)
+                    print(f"Segment {seg_id}: {inside_pixels} inside, {outside_pixels} outside ({outside_pixels/total_pixels*100:.1f}% outside)")
+                else:
+                    print(f"Segment {seg_id}: {inside_pixels} inside, fully within mask")
+
+            if problematic_segments:
+                print(f"\n⚠️  PROBLEM: {len(problematic_segments)} segments extend outside mask!")
+            else:
+                print(f"\n✓ GOOD: All segments are within mask")
+
+            # Also check boundary extraction
+            print(f"\n=== BOUNDARY EXTRACTION ===")
+            print(f"Extracted boundaries for {len(segment_boundaries)} segments")
+            for i, boundary_info in enumerate(segment_boundaries[:5]):  # Show first 5
+                print(f"  Segment {boundary_info['segment_id']}: {boundary_info['num_points']} boundary points, area={boundary_info['area']}")
+
+
         if debug:
             print(f"  Found {len(segment_boundaries)} sub-regions")
             print(f"  Total boundary points: {sum(seg['num_points'] for seg in segment_boundaries):,}")
@@ -93,81 +316,109 @@ def subregion_quantization(image_rgb, subregions, quality=10, subregion_type=Non
             segment_id = seg_data.get('segment_id', seg_idx)
             segment_mask = (subregions_segments == segment_id) & bbox_mask
             
+            import numpy as np
             segment_pixels = np.sum(segment_mask)
-            if segment_pixels < 64:
-                continue
             
             if debug:
                 print(f"\n    Segment {seg_idx+1}/{len(segment_boundaries)} (ID: {segment_id}):")
                 print(f"      Pixels: {segment_pixels:,}")
             
             # ==============================================
-            # 1. CREATE ISOLATED SEGMENT IMAGE
+            # 1. CREATE CORRECT SEGMENT IMAGE
             # ==============================================
-            # Create image with only this segment visible
-            segment_image_full = region_image.copy()
-            segment_image_full[bbox_mask & ~segment_mask] = [0, 0, 0]  # Other segments in bbox -> black
-            segment_image_full[~bbox_mask] = [0, 0, 0]  # Outside bbox -> black
+            # Create image with ONLY this segment visible
+            # DO NOT touch other segments - leave them as they are in original
+            # We'll extract just the segment area
+            
+            # Get the ORIGINAL pixels for this segment only
+            segment_pixels_original = region_image[segment_mask]
             
             # ==============================================
-            # 2. FIND TIGHT BOUNDING BOX (CROP TO NON-BLACK PIXELS)
+            # 2. FIND TIGHT BOUNDING BOX FROM SEGMENT MASK
             # ==============================================
-            # Find coordinates of non-black pixels
-            # Non-black = at least one channel is > 0
-            non_black_mask = np.any(segment_image_full > 0, axis=2)
+            # Use the SEGMENT MASK, not the modified image!
+            rows, cols = np.where(segment_mask)
             
-            if np.sum(non_black_mask) == 0:
-                print(f"      Warning: Segment has no non-black pixels!")
+            if len(rows) == 0 or len(cols) == 0:
                 continue
             
-            # Get row and column indices of non-black pixels
-            rows, cols = np.where(non_black_mask)
-            
-            # Find bounding box coordinates
+            # Find bounding box coordinates FROM THE MASK
             min_row, max_row = rows.min(), rows.max()
             min_col, max_col = cols.min(), cols.max()
             
-            # Add small padding (optional, e.g., 2 pixels)
-            pad = 0
-            h, w = segment_image_full.shape[:2]
+            # Add small padding
+            pad = 2
+            h, w = region_image.shape[:2]
             min_row = max(0, min_row - pad) 
             max_row = min(h - 1, max_row + pad) 
             min_col = max(0, min_col - pad)
-            max_col = min(w - 1, max_col + pad) 
+            max_col = min(w - 1, max_col + pad)
             
-            # Calculate dimensions of cropped region
+            # Calculate dimensions
             crop_height = max_row - min_row + 1
             crop_width = max_col - min_col + 1
             
             # ==============================================
-            # 3. CROP THE IMAGE TO TIGHT BOUNDING BOX
+            # 3. CROP ORIGINAL IMAGE TO BBOX
             # ==============================================
-            segment_image_cropped = segment_image_full[min_row:max_row+1, min_col:max_col+1]
-
+            # Crop the ORIGINAL region image (not modified)
+            bbox_crop = region_image[min_row:max_row+1, min_col:max_col+1]
             
+            # Also crop the segment mask to same bbox
+            segment_mask_cropped = segment_mask[min_row:max_row+1, min_col:max_col+1]
+            
+            # Create final segment image: only segment pixels visible
+            segment_image_cropped = np.zeros_like(bbox_crop)
+            segment_image_cropped[segment_mask_cropped] = bbox_crop[segment_mask_cropped]
             
             # ==============================================
-            # 4. CALCULATE ORIGINAL COORDINATES
+            # 4. CALCULATE ABSOLUTE COORDINATES
             # ==============================================            
             absolute_min_row = min_row + minr
             absolute_min_col = min_col + minc 
             absolute_max_row = max_row + minr 
             absolute_max_col = max_col + minc
             
-            # The top-left corner (left-northernmost point) coordinates in full image:
             top_left_abs_row = absolute_min_row
             top_left_abs_col = absolute_min_col
             
             if debug:
-                print(f"      Original segment shape: {segment_image_full.shape[:2]}")
-                print(f"      Cropped segment shape: {segment_image_cropped.shape[:2]}")
-                print(f"      Crop reduction: {(1 - (crop_height*crop_width)/(h*w))*100:.1f}%")
-                print(f"      Bbox in region: ({min_row}, {min_col}) to ({max_row}, {max_col})")
-                print(f"      Bbox in full image: ({absolute_min_row}, {absolute_min_col}) to ({absolute_max_row}, {absolute_max_col})")
+                print(f"      Original region shape: {region_image.shape[:2]}")
+                print(f"      Cropped bbox shape: {segment_image_cropped.shape[:2]}")
+                print(f"      Segment pixels in crop: {np.sum(segment_mask_cropped)}")
                 print(f"      Top-left in full image: ({top_left_abs_row}, {top_left_abs_col})")
-            
-                print(f"segment_image_cropped shape: {segment_image_cropped.shape}")
 
+
+            # Get segment pixels
+            segment_pixels = bbox_crop[segment_mask_cropped]
+
+            if len(segment_pixels) > 0:
+                # Check for black pixels INSIDE the segment (not background)
+                black_in_segment = np.any(np.all(segment_pixels == [0, 0, 0], axis=1))
+                
+                if black_in_segment:
+                    print(f"Segment {segment_id}: Has black pixels inside segment")
+                    
+                    # Replace black pixels with nearest non-black color
+                    # First, find non-black pixels
+                    non_black_mask = ~np.all(segment_pixels == [0, 0, 0], axis=1)
+                    non_black_pixels = segment_pixels[non_black_mask]
+                    
+                    if len(non_black_pixels) > 0:
+                        # For each black pixel, find closest non-black color
+                        black_mask = np.all(segment_pixels == [0, 0, 0], axis=1)
+                        black_indices = np.where(black_mask)[0]
+                        
+                        for idx in black_indices:
+                            # Calculate distances to all non-black pixels
+                            distances = np.linalg.norm(non_black_pixels - segment_pixels[idx], axis=1)
+                            closest_idx = np.argmin(distances)
+                            segment_pixels[idx] = non_black_pixels[closest_idx]
+                        
+                        print(f"  Fixed {len(black_indices)} black pixels in segment")
+                    
+                    # Update the segment image
+                    segment_image_cropped[segment_mask_cropped] = segment_pixels
 
             # ==============================================
             # 2. COMPRESS CROPPED SEGMENT
@@ -176,7 +427,6 @@ def subregion_quantization(image_rgb, subregions, quality=10, subregion_type=Non
                 segment_image_cropped,
                 (top_left_abs_row, top_left_abs_col)
             )
-
 
             n_colors = seg_compression['actual_colors']
 
@@ -211,7 +461,7 @@ def subregion_quantization(image_rgb, subregions, quality=10, subregion_type=Non
                 # ==============================================
                 # 3. RECONSTRUCT 
                 # ==============================================
-                reconstruction_result = decompress_color_quantization(
+                reconstruction_result = partial_decompress_color_quantization(
                     seg_compression,
                 )
 
@@ -379,13 +629,6 @@ def subregion_quantization(image_rgb, subregions, quality=10, subregion_type=Non
                 print(f"{'='*60}")
             
                 
-            
-            
-
-            if seg_compression is None:
-                continue
-        
-            
 
             #all_segments_compressed.append(seg_compression)
             region_components.append(seg_compression)
@@ -394,12 +637,6 @@ def subregion_quantization(image_rgb, subregions, quality=10, subregion_type=Non
         # ==============================================
         # 4. MERGE COMPONENTS WITHIN THIS subregions
         # ==============================================
-        if debug:
-            print(f"\n{'='*60}")
-            print(f"MERGING COMPONENTS FOR subregions {i+1}")
-            print(f"{'='*60}")
-
-                
         if len(region_components) > 1:
             # Get subregions bbox
             minr, minc, maxr, maxc = region['bbox']

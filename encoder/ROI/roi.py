@@ -41,6 +41,7 @@ def get_regions(image_rgb):
 
 
 from skimage.measure import label, regionprops
+
 def extract_regions(image_rgb, roi_mask, nonroi_mask):
     # Calculate minimum region size
     min_region_size = math.ceil(
@@ -359,6 +360,133 @@ def extract_connected_regions_fast(mask, original_image):
     return region_data
 
 
+def extract_connected_regions_with_tight_bbox(mask, original_image):
+    """
+    Extract regions with tight bounding boxes that match actual content.
+    FIXED: Handles edge cases and ensures non-empty bboxes.
+    """
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), 
+        connectivity=8
+    )
+    
+    if num_labels <= 1:
+        return []
+    
+    region_data = []
+    height, width = mask.shape
+    
+    # Pre-allocate arrays for coordinates
+    all_coords = np.column_stack(np.where(labels > 0))
+    all_labels = labels[labels > 0]
+    
+    if len(all_coords) == 0:
+        return []
+    
+    # Sort coordinates by label
+    sort_idx = np.argsort(all_labels)
+    all_coords = all_coords[sort_idx]
+    all_labels = all_labels[sort_idx]
+    
+    # Find where each label starts
+    unique_labels, label_starts = np.unique(all_labels, return_index=True)
+    label_starts = list(label_starts) + [len(all_labels)]
+    
+    for i, label in enumerate(unique_labels):
+        start_idx = label_starts[i]
+        end_idx = label_starts[i + 1]
+        coords = all_coords[start_idx:end_idx]
+        
+        if len(coords) == 0:
+            continue
+        
+        # GET TIGHT BBOX FROM COORDINATES - CORRECTED!
+        # Note: coords[:, 0] = y (rows), coords[:, 1] = x (columns)
+        min_y = np.min(coords[:, 0])
+        max_y = np.max(coords[:, 0])  # Fixed: was coords[:, 1]
+        min_x = np.min(coords[:, 1])  
+        max_x = np.max(coords[:, 1])  # Fixed: was coords[:, 0] (wrong!)
+        
+        # Ensure bbox has positive dimensions
+        if max_y <= min_y or max_x <= min_x:
+            print(f"WARNING: Region {label} has invalid bbox: ({min_y},{min_x})-({max_y},{max_x})")
+            # Use stats bbox as fallback
+            min_y = stats[label, cv2.CC_STAT_TOP]
+            max_y = min_y + stats[label, cv2.CC_STAT_HEIGHT]
+            min_x = stats[label, cv2.CC_STAT_LEFT]
+            max_x = min_x + stats[label, cv2.CC_STAT_WIDTH]
+        
+        # Convert to Python slicing convention (exclusive max)
+        max_y += 1
+        max_x += 1
+        
+        # Clamp to image bounds
+        min_y = max(0, min_y)
+        max_y = min(height, max_y)
+        min_x = max(0, min_x)
+        max_x = min(width, max_x)
+        
+        # Final check: ensure bbox is not empty
+        if max_y <= min_y or max_x <= min_x:
+            print(f"WARNING: Region {label} has empty bbox after clamping, skipping")
+            continue
+        
+        tight_h = max_y - min_y
+        tight_w = max_x - min_x
+        
+        # Stats bbox for comparison
+        stats_y = stats[label, cv2.CC_STAT_TOP]
+        stats_x = stats[label, cv2.CC_STAT_LEFT]
+        stats_h = stats[label, cv2.CC_STAT_HEIGHT]
+        stats_w = stats[label, cv2.CC_STAT_WIDTH]
+        
+        # Compare sizes
+        if tight_h != stats_h or tight_w != stats_w:
+            print(f"Region {label}: Tight bbox {tight_w}x{tight_h}, Stats bbox {stats_w}x{stats_h}")
+        
+        # Create single region mask
+        single_region_mask = np.zeros((height, width), dtype=bool)
+        single_region_mask[coords[:, 0], coords[:, 1]] = True
+        
+        # Extract region image using TIGHT bbox
+        if original_image.ndim == 3:
+            # Extract using tight bbox
+            tight_bbox_image = original_image[min_y:max_y, min_x:max_x]
+            
+            # Create region image (full size)
+            region_image = np.zeros_like(original_image)
+            region_image[coords[:, 0], coords[:, 1]] = original_image[coords[:, 0], coords[:, 1]]
+        else:
+            tight_bbox_image = original_image[min_y:max_y, min_x:max_x]
+            region_image = np.zeros_like(original_image)
+            region_image[coords[:, 0], coords[:, 1]] = original_image[coords[:, 0], coords[:, 1]]
+        
+        # Tight bbox mask
+        tight_bbox_mask = single_region_mask[min_y:max_y, min_x:max_x]
+        
+        # Verify all mask pixels are within bbox
+        mask_in_bbox = tight_bbox_mask
+        if np.sum(mask_in_bbox) != len(coords):
+            print(f"WARNING: Region {label}: Not all mask pixels in tight bbox!")
+            print(f"  Mask pixels: {len(coords)}, In bbox: {np.sum(mask_in_bbox)}")
+        
+        # Store with TIGHT bbox
+        region_data.append({
+            'mask': single_region_mask,
+            'full_image': region_image,
+            'bbox_image': tight_bbox_image,  # This should NOT be empty now
+            'bbox_mask': tight_bbox_mask,
+            'bbox': (min_y, min_x, max_y, max_x),  # TIGHT!
+            'area': len(coords),
+            'coords': coords,
+            'label': label,
+            'stats_bbox': (stats_y, stats_x, stats_y + stats_h, stats_x + stats_w),  # For comparison
+            'tight_bbox': (min_y, min_x, max_y, max_x)  # The one we use
+        })
+    
+    return region_data
+
+
 def plot_regions(regions, title, max_display=12):
     """Plot multiple regions in a grid"""
     n_regions = min(len(regions), max_display)
@@ -427,13 +555,6 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
 
     start_time=time.time()
     # Skeleton-based connection
-    """pre_connected = connect_nearby_pixels(
-        noiseless_binary_borders,
-        connection_distance=25,
-        method='skeleton',
-        min_region_size=25
-    )"""
-
     pre_connected = connect_by_closing_fast(
         noiseless_binary_borders,
         connection_distance=5,

@@ -5,7 +5,8 @@ from skimage.segmentation import slic
 import matplotlib.pyplot as plt
 import math
 
-"""def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight=0.3):
+"""
+def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight=0.3):
     # Calculate texture features
     gray = rgb2gray(image)
     texture_map = np.zeros_like(gray)
@@ -37,8 +38,9 @@ import math
     return segments, texture_map
 """
 
+
 #def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight=0.3):
-def enhanced_slic_with_texture(image, n_segments=100, compactness=10):
+def enhanced_slic_with_texture(image, mask, n_segments=100, compactness=10):
 
     scale_factor= round( 500/max(image.shape) , 1 )
     if scale_factor>1: scale_factor=1
@@ -73,12 +75,19 @@ def enhanced_slic_with_texture(image, n_segments=100, compactness=10):
     
     n_segments=math.ceil(n_segments * scale_factor * scale_factor)  # Adjust for area
     # Run SLIC on small image
+    
+    # Create a version where background is black
+    masked_image = small_image.copy()
+    masked_image[~mask] = [0, 0, 0]  # Set background to black
+    
+    # Run SLIC
     segments_small = slic(
-        small_image,
+        masked_image,
         n_segments=n_segments,
         compactness=compactness,
         sigma=1,
-        channel_axis=2
+        channel_axis=2,
+        mask=mask  # SKIMAGE 0.21+ SUPPORTS MASK PARAMETER!
     )
     
     # Upscale segmentation
@@ -90,43 +99,42 @@ def enhanced_slic_with_texture(image, n_segments=100, compactness=10):
     return segments,texture_map
 
 
+"""def enhanced_slic_with_texture(image, mask, n_segments=100, compactness=10):
+
+    # Create masked image
+    masked_image = image.copy()
+    masked_image[~mask] = [0, 0, 0]
+    
+    # Run SLIC directly
+    try:
+        segments = slic(
+            masked_image,
+            n_segments=n_segments,
+            compactness=compactness,
+            sigma=1,
+            channel_axis=2,
+            mask=mask
+        )
+    except TypeError:
+        # Fallback
+        segments = slic(
+            masked_image,
+            n_segments=n_segments,
+            compactness=compactness,
+            sigma=1,
+            channel_axis=2
+        )
+        segments[~mask] = 0
+    
+    # Texture map (optional, can return None if not needed)
+    texture_map = None
+    
+    return segments, texture_map
+"""
 from skimage.segmentation import find_boundaries
 from skimage.measure import find_contours
 import numpy as np
 
-"""
-def extract_slic_segment_boundaries(roi_segments, bbox_mask):
-
-    segment_boundaries = []
-    
-    # Get unique segment IDs (excluding background)
-    segment_ids = np.unique(roi_segments)
-    segment_ids = segment_ids[segment_ids != 0]  # Remove background
-    
-    for seg_id in segment_ids:
-        # Create mask for this specific segment
-        segment_mask = (roi_segments == seg_id) & bbox_mask
-        
-        if np.sum(segment_mask) > 0:  # If segment exists in our region
-            # Find contours/boundaries
-            contours = find_contours(segment_mask, level=0.5)
-            
-            # Take the longest contour (main boundary)
-            if len(contours) > 0:
-                main_contour = max(contours, key=len)
-                
-                # Convert to list of (y,x) coordinates
-                boundary_coords = [(coord[0], coord[1]) for coord in main_contour]
-                
-                segment_boundaries.append({
-                    'segment_id': int(seg_id),
-                    'boundary_coords': boundary_coords,
-                    'area': np.sum(segment_mask),
-                    'num_points': len(boundary_coords)
-                })
-    
-    return segment_boundaries
-"""
 
 def extract_slic_segment_boundaries(roi_segments, bbox_mask):
     """
@@ -246,3 +254,35 @@ def visualize_split_analysis(region_image, overall_score, color_score, texture_s
     plt.tight_layout()
     plt.show()
 
+
+
+def watershed_segmentation_with_mask(image, mask, n_segments=100):
+    """
+    Use watershed algorithm which respects mask boundaries better.
+    """
+    from skimage.segmentation import watershed
+    from skimage.feature import peak_local_max
+    from scipy import ndimage as ndi
+    
+    # Convert to grayscale for markers
+    gray = rgb2gray(image)
+    gray[~mask] = 0
+    
+    # Compute distance transform within mask
+    distance = ndi.distance_transform_edt(mask)
+    
+    # Find local maxima for markers
+    # Adjust min_distance based on desired number of segments
+    min_distance = max(5, int(np.sqrt(mask.sum() / n_segments)))
+    
+    coordinates = peak_local_max(distance, min_distance=min_distance, labels=mask)
+    
+    # Create markers
+    markers = np.zeros(distance.shape, dtype=int)
+    for i, (y, x) in enumerate(coordinates):
+        markers[y, x] = i + 1
+    
+    # Apply watershed
+    segments = watershed(-distance, markers, mask=mask)
+    
+    return segments, None  # No texture map

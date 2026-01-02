@@ -32,7 +32,7 @@ if __name__ == "__main__":
     # Example data
 
     # Load images
-    original_path = 'images/Lenna.webp'
+    original_path = 'images/Lenna.png'
     reconstructed_path = 'compressed_lenna.rhccq'  # Your saved reconstruction
 
     # Load original image
@@ -60,7 +60,7 @@ if __name__ == "__main__":
 
     # Assuming reconstructed is a numpy array with shape (h, w, 3)
     #reconstructed = cv2.GaussianBlur(reconstructed, (81, 81), 0)
-    reconstructed = apply_edge_preserving_blur(reconstructed, blur_strength=5, edge_preservation=50)
+    #reconstructed = apply_edge_preserving_blur(reconstructed, blur_strength=5, edge_preservation=50)
 
     import matplotlib.pyplot as plt
     plt.title("reconstructed")
