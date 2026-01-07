@@ -72,6 +72,7 @@ def merge_region_components_simple(region_components, roi_bbox):
                     if seg_pixel_idx < len(seg_palette):
                         color_tuple = tuple(seg_palette[seg_pixel_idx])
                         
+                        
                         if color_tuple != black_color:
                             if color_tuple not in color_to_index:
                                 color_to_index[color_tuple] = len(all_colors)
@@ -117,7 +118,6 @@ def merge_region_components_simple(region_components, roi_bbox):
     }
     
     return [merged_segment]
-
 
 
 

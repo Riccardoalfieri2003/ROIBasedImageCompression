@@ -27,13 +27,12 @@ def apply_edge_preserving_blur(image, blur_strength=3, edge_preservation=10):
     return (blurred * 255).astype(np.uint8)
 
 
-
+# Tested on Kodak Lossless True Color Image Suite
 if __name__ == "__main__":
-    # Example data
 
     # Load images
-    original_path = 'images/png/napali.png'
-    reconstructed_path = 'images/rhccq/compressed_napali.rhccq'
+    original_path = 'images/png/3.png'
+    reconstructed_path = 'images/rhccq/compressed_3.rhccq'
 
     # Load original image
     original_bgr = cv2.imread(original_path)
@@ -60,7 +59,7 @@ if __name__ == "__main__":
 
     # Assuming reconstructed is a numpy array with shape (h, w, 3)
     #reconstructed = cv2.GaussianBlur(reconstructed, (81, 81), 0)
-    reconstructed = apply_edge_preserving_blur(reconstructed, blur_strength=5, edge_preservation=50)
+    #reconstructed = apply_edge_preserving_blur(reconstructed, blur_strength=5, edge_preservation=50)
 
     import matplotlib.pyplot as plt
     plt.title("reconstructed")
