@@ -72,7 +72,7 @@ def region_quantization(regions_components, original_image_height, original_imag
     
 
 
-    show_reconstruction_result=True
+    show_reconstruction_result=False
     if show_reconstruction_result:
         # ==============================================
         # 3. RECONSTRUCT 

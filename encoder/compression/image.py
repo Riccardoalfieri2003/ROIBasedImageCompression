@@ -293,7 +293,7 @@ def quantize_image(image_components, original_image_height, original_image_width
     
 
 
-    show_reconstruction_result=True
+    show_reconstruction_result=False
     if show_reconstruction_result:
         # ==============================================
         # 3. RECONSTRUCT 

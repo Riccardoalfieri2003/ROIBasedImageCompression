@@ -92,7 +92,7 @@ def extract_regions(image_rgb, roi_mask, nonroi_mask):
         print(f"  Region {i+1}: Area = {region['area']} pixels")
 
 
-    debug=True
+    debug=False
     if debug:
         # Display ROI regions
         plot_regions(roi_regions, "ROI Regions")
@@ -598,7 +598,7 @@ def process_and_unify_borders(edge_map, edge_density, original_image,
     roi_image, nonroi_image, roi_mask, nonroi_mask = extract_roi_nonroi(original_image, region_map)
     
     # Create visualization
-    visualize_roi_nonroi_comparison(original_image, roi_image, nonroi_image, region_map)
+    #visualize_roi_nonroi_comparison(original_image, roi_image, nonroi_image, region_map)
     
     print(f"=== ROI/non-ROI Statistics ===")
     print(f"ROI coverage: {np.sum(roi_mask)} pixels ({np.sum(roi_mask)/roi_mask.size*100:.1f}%)")
@@ -653,7 +653,7 @@ def visualize_roi_nonroi_comparison(original_image, roi_image, nonroi_image, reg
     plt.tight_layout()
     plt.show()
 
-def extract_roi_nonroi(original_image, region_map):
+def extract_roi_nonroi_alt(original_image, region_map):
     """
     Extract ROI and non-ROI regions from original image.
     
@@ -678,6 +678,42 @@ def extract_roi_nonroi(original_image, region_map):
     # Create non-ROI image (keep non-ROI pixels, black out ROI)
     nonroi_image = original_image.copy()
     nonroi_image[~nonroi_mask] = 0  # Set ROI to black
+    
+    return roi_image, nonroi_image, roi_mask, nonroi_mask
+
+
+def extract_roi_nonroi(original_image, region_map, buffer_size=3):
+    """
+    Extract ROI and non-ROI with a buffer zone at boundaries.
+    This prevents hard edges that cause black borders.
+    """
+    from scipy import ndimage
+    
+    # Create soft masks with buffer zone
+    roi_core = (region_map == 1)
+    nonroi_core = (region_map == 0)
+    
+    # Dilate both masks to create overlapping buffer zone
+    roi_expanded = ndimage.binary_dilation(roi_core, iterations=buffer_size)
+    nonroi_expanded = ndimage.binary_dilation(nonroi_core, iterations=buffer_size)
+    
+    # Create buffer zone where masks overlap
+    buffer_zone = roi_expanded & nonroi_expanded
+    
+    # Create masks with soft boundaries
+    roi_mask = roi_core | buffer_zone  # ROI includes buffer
+    nonroi_mask = nonroi_core | buffer_zone  # Non-ROI includes buffer
+    
+    # For compression: treat buffer zone differently
+    # Option A: Assign buffer to both regions (they'll overlap)
+    # Option B: Split buffer 50/50
+    
+    # Extract images
+    roi_image = original_image.copy()
+    roi_image[~roi_mask] = 0
+    
+    nonroi_image = original_image.copy()
+    nonroi_image[~nonroi_mask] = 0
     
     return roi_image, nonroi_image, roi_mask, nonroi_mask
 
