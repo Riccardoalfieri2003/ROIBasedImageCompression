@@ -31,8 +31,8 @@ def apply_edge_preserving_blur(image, blur_strength=3, edge_preservation=10):
 if __name__ == "__main__":
 
     # Load images
-    original_path = 'images/png/3.png'
-    reconstructed_path = 'images/rhccq/compressed_3.rhccq'
+    original_path = 'images/png/5.png'
+    reconstructed_path = 'images/rhccq/compressed_5.rhccq'
 
     # Load original image
     original_bgr = cv2.imread(original_path)
