@@ -38,16 +38,16 @@ def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight
     return segments, texture_map
 """
 
-
-#def enhanced_slic_with_texture(image, n_segments, compactness=10, texture_weight=0.3):
 def enhanced_slic_with_texture(image, mask, n_segments=100, compactness=10):
-
-    scale_factor= round( 500/max(image.shape) , 1 )
-    if scale_factor>1: scale_factor=1
+    scale_factor = round(500 / max(image.shape), 1)
+    if scale_factor > 1: 
+        scale_factor = 1
 
     # Calculate texture features
     gray = rgb2gray(image)
     texture_map = np.zeros_like(gray)
+
+    """
     
     # Calculate texture using Gabor filters
     for theta in [0, np.pi/4, np.pi/2, 3*np.pi/4]:
@@ -61,11 +61,11 @@ def enhanced_slic_with_texture(image, mask, n_segments=100, compactness=10):
     if texture_map.max() > 0:
         texture_map = texture_map / texture_map.max()
 
-
+    """
 
     from skimage.transform import resize
     
-    # Downscale image
+    # Downscale image AND mask
     h, w = image.shape[:2]
     new_h, new_w = int(h * scale_factor), int(w * scale_factor)
     
@@ -73,12 +73,17 @@ def enhanced_slic_with_texture(image, mask, n_segments=100, compactness=10):
                         preserve_range=True, 
                         anti_aliasing=True).astype(np.uint8)
     
-    n_segments=math.ceil(n_segments * scale_factor * scale_factor)  # Adjust for area
-    # Run SLIC on small image
+    # Also resize the mask to match the small image
+    small_mask = resize(mask, (new_h, new_w),
+                       order=0,  # Nearest-neighbor for binary mask
+                       preserve_range=True,
+                       anti_aliasing=False).astype(bool)
+    
+    n_segments = math.ceil(n_segments * scale_factor * scale_factor)  # Adjust for area
     
     # Create a version where background is black
     masked_image = small_image.copy()
-    masked_image[~mask] = [0, 0, 0]  # Set background to black
+    masked_image[~small_mask] = [0, 0, 0]  # Use small_mask instead of mask
     
     # Run SLIC
     segments_small = slic(
@@ -87,7 +92,7 @@ def enhanced_slic_with_texture(image, mask, n_segments=100, compactness=10):
         compactness=compactness,
         sigma=1,
         channel_axis=2,
-        mask=mask  # SKIMAGE 0.21+ SUPPORTS MASK PARAMETER!
+        mask=small_mask  # Use the resized mask here too
     )
     
     # Upscale segmentation
@@ -96,8 +101,7 @@ def enhanced_slic_with_texture(image, mask, n_segments=100, compactness=10):
                      preserve_range=True,
                      anti_aliasing=False).astype(np.int32)
     
-    return segments,texture_map
-
+    return segments, texture_map
 
 """def enhanced_slic_with_texture(image, mask, n_segments=100, compactness=10):
 
