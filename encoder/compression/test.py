@@ -76,7 +76,7 @@ def save_compression(image_seg_compression, filename):
 
 if __name__ == "__main__":
 
-    image_name = 'images/png/Lenna.png'
+    image_name = 'images/png/Napoli.png'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -121,8 +121,11 @@ if __name__ == "__main__":
 
     original_image_height, original_image_width, _ = image_rgb.shape
 
-    roi_components=region_quantization(ROI_subregions_components, quality=roi_region_quality, original_image_height=original_image_height, original_image_width=original_image_width)
-    nonroi_components=region_quantization(nonROI_subregions_components, quality=nonroi_region_quality, original_image_height=original_image_height, original_image_width=original_image_width)
+    try: roi_components=region_quantization(ROI_subregions_components, quality=roi_region_quality, original_image_height=original_image_height, original_image_width=original_image_width)
+    except: roi_components=[]
+    
+    try: nonroi_components=region_quantization(nonROI_subregions_components, quality=nonroi_region_quality, original_image_height=original_image_height, original_image_width=original_image_width)
+    except: nonroi_components=[]
 
     image_components=roi_components+nonroi_components
 
@@ -145,4 +148,4 @@ if __name__ == "__main__":
     if savePicture: save_picture(image_seg_compression)
 
     saveCompression = True
-    if saveCompression: save_compression(image_seg_compression, filename="compressed_lenna.rhccq")
+    if saveCompression: save_compression(image_seg_compression, filename="compressed_napoli.rhccq")
