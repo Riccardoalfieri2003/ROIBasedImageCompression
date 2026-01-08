@@ -488,10 +488,10 @@ def main():
     # Example file structure - modify as needed
     test_images = [
         {
-            'name': '1',
-            'png': 'images/png/1.png',
-            'jpg': 'images/jpg/compressed_1.jpg',  # JPEG at quality 85
-            'rhccq': 'images/rhccq_20_10/compressed_1.rhccq'   # Your custom format
+            'name': '2',
+            'png': 'images/png/adidas.png',
+            'jpg': 'images/jpg/adidas_compressed.jpg',  # JPEG at quality 85
+            'rhccq': 'images/rhccq/adidas_compressed.rhccq'   # Your custom format
         }
     ]
     
