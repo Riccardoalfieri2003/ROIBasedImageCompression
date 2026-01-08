@@ -76,7 +76,7 @@ def save_compression(image_seg_compression, filename):
 
 if __name__ == "__main__":
 
-    image_name = 'images/png/4.png'
+    image_name = 'images/png/8.png'
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -148,4 +148,4 @@ if __name__ == "__main__":
     if savePicture: save_picture(image_seg_compression)
 
     saveCompression = True
-    if saveCompression: save_compression(image_seg_compression, filename="images/rhccq/compressed_4.rhccq")
+    if saveCompression: save_compression(image_seg_compression, filename="images/rhccq/compressed_8.rhccq")
