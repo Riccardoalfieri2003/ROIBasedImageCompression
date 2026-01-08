@@ -32,7 +32,7 @@ if __name__ == "__main__":
 
     # Load images
     original_path = 'images/png/1.png'
-    reconstructed_path = 'images/rhccq/compressed_1.rhccq'
+    reconstructed_path = 'images/rhccq_20_10/compressed_1.rhccq'
 
     # Load original image
     original_bgr = cv2.imread(original_path)

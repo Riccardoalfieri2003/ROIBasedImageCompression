@@ -45,6 +45,6 @@ def compress_with_jpeg(image_path, quality=85, output_path=None):
 
 compress_with_jpeg(
     image_path='images/png/1.png',
-    quality=100,
+    quality=75,
     output_path='images/jpg/compressed_1.jpg'
 )
