@@ -44,7 +44,7 @@ def compress_with_jpeg(image_path, quality=85, output_path=None):
     return compressed_img, compressed_size, compression_ratio
 
 compress_with_jpeg(
-    image_path='images/png/adidas.png',
+    image_path=r"C:\Users\rical\OneDrive\Desktop\Wallpaper\Napoli.png",
     quality=90,
-    output_path='images/jpg/adidas_compressed.jpg'
+    output_path='images/jpg/Napoli_compressed.jpg'
 )

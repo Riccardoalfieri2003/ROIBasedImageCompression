@@ -76,7 +76,7 @@ def save_compression(image_seg_compression, filename):
 
 if __name__ == "__main__":
 
-    image_name = 'images/png/adidas.png'
+    image_name = r"C:\Users\rical\OneDrive\Desktop\Wallpaper\Napoli.png"
     image = cv2.imread(image_name)
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
@@ -97,8 +97,8 @@ if __name__ == "__main__":
 
 
 
-    roi_quality=20
-    nonroi_quality=10
+    roi_quality=10
+    nonroi_quality=5
    
 
 
@@ -148,4 +148,4 @@ if __name__ == "__main__":
     if savePicture: save_picture(image_seg_compression)
 
     saveCompression = True
-    if saveCompression: save_compression(image_seg_compression, filename="images/rhccq/adidas_compressed.rhccq")
+    if saveCompression: save_compression(image_seg_compression, filename="images/rhccq/Napoli_compressed.rhccq")

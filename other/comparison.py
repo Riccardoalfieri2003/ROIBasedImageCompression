@@ -489,9 +489,9 @@ def main():
     test_images = [
         {
             'name': '2',
-            'png': 'images/png/adidas.png',
-            'jpg': 'images/jpg/adidas_compressed.jpg',  # JPEG at quality 85
-            'rhccq': 'images/rhccq/adidas_compressed.rhccq'   # Your custom format
+            'png': r"C:\Users\rical\OneDrive\Desktop\Wallpaper\Napoli.png",
+            'jpg': 'images/jpg/Napoli_compressed.jpg',  # JPEG at quality 85
+            'rhccq': 'images/rhccq/Napoli_compressed.rhccq'   # Your custom format
         }
     ]
     
@@ -517,7 +517,7 @@ def main():
             
             # Create individual visualization
             vis_path = f"comparison_{img_info['name']}.png"
-            create_visual_comparison(results, vis_path)
+            #create_visual_comparison(results, vis_path)
             
         except Exception as e:
             print(f"❌ Error processing {img_info['name']}: {e}")

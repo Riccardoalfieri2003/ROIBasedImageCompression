@@ -31,8 +31,8 @@ def apply_edge_preserving_blur(image, blur_strength=3, edge_preservation=10):
 if __name__ == "__main__":
 
     # Load images
-    original_path = 'images/png/1.png'
-    reconstructed_path = 'images/rhccq_20_10/compressed_1.rhccq'
+    original_path = r"C:\Users\rical\OneDrive\Desktop\Wallpaper\Napoli.png"
+    reconstructed_path = 'images/rhccq/Napoli_compressed.rhccq'
 
     # Load original image
     original_bgr = cv2.imread(original_path)

@@ -256,7 +256,7 @@ def quantize_image(image_components, original_image_height, original_image_width
     # Extract the merged segment dictionary
     merged_segment = regions_image[0]  # This contains palette and indices, NOT the image!
 
-    merged_segment=fill_black_holes_vectorized(merged_segment, max_hole_size=50)
+    #merged_segment=fill_black_holes_vectorized(merged_segment, max_hole_size=50)
 
     n_colors = merged_segment['actual_colors']
     palette_colors = np.array(merged_segment['palette'])
