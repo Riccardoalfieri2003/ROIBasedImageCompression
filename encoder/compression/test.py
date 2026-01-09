@@ -97,8 +97,8 @@ if __name__ == "__main__":
 
 
 
-    roi_quality=10
-    nonroi_quality=5
+    roi_quality=20
+    nonroi_quality=10
    
 
 
@@ -148,4 +148,4 @@ if __name__ == "__main__":
     if savePicture: save_picture(image_seg_compression)
 
     saveCompression = True
-    if saveCompression: save_compression(image_seg_compression, filename="images/rhccq/Napoli_compressed.rhccq")
+    if saveCompression: save_compression(image_seg_compression, filename="images/rhccq_20_10/Lenna_compressed.rhccq")

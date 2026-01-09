@@ -1,0 +1,17 @@
+# Virtual Environment
+venv/
+test_env/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Data and OS specific
+.DS_Store
+Thumbs.db
